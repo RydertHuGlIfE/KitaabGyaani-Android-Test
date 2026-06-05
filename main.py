@@ -8,6 +8,7 @@ from typing import List, Optional
 from config import Config
 from services.llm_service import LLMService
 from services.ocr_service import OCRService
+from services.pdf_service import PDFService
 from agents.study_agent import StudyAgent
 from agents.planner_agent import PlannerAgent
 from agents.expense_agent import ExpenseAgent
@@ -25,11 +26,13 @@ app.add_middleware(
 
 llm_service = LLMService()
 ocr_service = OCRService()
+pdf_service = PDFService()
 
-study_agent = StudyAgent(llm_service, ocr_service)
+study_agent = StudyAgent(llm_service, ocr_service, pdf_service)
 planner_agent = PlannerAgent(llm_service)
 expense_agent = ExpenseAgent()
 content_agent = ContentAgent(llm_service)
+
 
 class ConnectionManager:
     def __init__(self):
