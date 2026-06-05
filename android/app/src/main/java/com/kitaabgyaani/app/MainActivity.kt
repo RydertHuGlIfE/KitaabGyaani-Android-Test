@@ -33,12 +33,20 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalDensity
 import com.google.gson.Gson
 import com.kitaabgyaani.app.data.model.*
 import com.kitaabgyaani.app.data.network.WebSocketClient
@@ -126,12 +134,16 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         var selectedImageBitmap by remember { mutableStateOf<Bitmap?>(null) }
         var cameraPhotoUri by remember { mutableStateOf<Uri?>(null) }
 
+        var isPlayingGame by remember { mutableStateOf(false) }
+        var quizQuestions by remember { mutableStateOf<List<GameQuestion>>(emptyList()) }
+
         val chatSessions = remember {
             mutableStateMapOf<String, List<ChatSession>>().apply {
                 put("study", emptyList())
                 put("planner", emptyList())
                 put("expense", emptyList())
                 put("content", emptyList())
+                put("quiz", emptyList())
             }
         }
 
@@ -141,7 +153,34 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                 put("planner", null)
                 put("expense", null)
                 put("content", null)
+                put("quiz", null)
             }
+        }
+
+        var isGeneratingQuiz by remember { mutableStateOf(false) }
+
+        val launchQuizAction = {
+            isGeneratingQuiz = true
+            startQuizGame(
+                inputText = inputText,
+                selectedFileBase64 = selectedFileBase64,
+                selectedFileIsImage = selectedFileIsImage,
+                serverIp = serverIp,
+                currentSessionIds = currentSessionIds,
+                onSuccess = { questions ->
+                    isGeneratingQuiz = false
+                    if (questions.isNotEmpty()) {
+                        quizQuestions = questions
+                        isPlayingGame = true
+                        inputText = ""
+                        selectedFileBase64 = null
+                        selectedImageBitmap = null
+                        selectedFileName = null
+                    } else {
+                        Toast.makeText(context, "No questions generated", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            )
         }
 
         val currentSessionId = currentSessionIds[currentAgent]
@@ -153,6 +192,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                     "planner" -> "Hello! Send me your exam syllabus topics and target date to generate a study plan."
                     "expense" -> "Hello! Take a photo of a receipt to parse amount, category, and merchant details."
                     "content" -> "Hello! Describe the writing task and context to draft a professional copy."
+                    "quiz" -> "Hello! Enter a topic (e.g. Science) or attach a study material to generate a custom quiz and play Space Invaders!"
                     else -> "Hello! How can I help you today?"
                 }
             )
@@ -358,8 +398,19 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
         val scope = rememberCoroutineScope()
 
-        ModalNavigationDrawer(
-            drawerState = drawerState,
+        if (isPlayingGame) {
+            GameScreen(
+                questions = quizQuestions,
+                serverIp = serverIp,
+                onBackToChat = { isPlayingGame = false },
+                onPlayAgain = {
+                    isPlayingGame = false
+                    launchQuizAction()
+                }
+            )
+        } else {
+            ModalNavigationDrawer(
+                drawerState = drawerState,
             drawerContent = {
                 ModalDrawerSheet(
                     drawerContainerColor = DarkSurface,
@@ -658,26 +709,30 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                                 keyboardActions = KeyboardActions(onSend = {
                                     if (inputText.isNotEmpty() || selectedFileBase64 != null) {
-                                        sendMessage(
-                                            text = inputText,
-                                            agent = currentAgent,
-                                            isConnected = isConnected,
-                                            serverIp = serverIp,
-                                            chatSessions = chatSessions,
-                                            currentSessionIds = currentSessionIds,
-                                            fileBase64 = selectedFileBase64,
-                                            isImage = selectedFileIsImage,
-                                            imageBitmap = selectedImageBitmap,
-                                            onClearAttachment = {
-                                                selectedFileBase64 = null
-                                                selectedImageBitmap = null
-                                                selectedFileName = null
-                                            },
-                                            onResponseReceived = {
-                                                fetchHistory(serverIp)
-                                            }
-                                        )
-                                        inputText = ""
+                                        if (currentAgent == "quiz") {
+                                            launchQuizAction()
+                                        } else {
+                                            sendMessage(
+                                                text = inputText,
+                                                agent = currentAgent,
+                                                isConnected = isConnected,
+                                                serverIp = serverIp,
+                                                chatSessions = chatSessions,
+                                                currentSessionIds = currentSessionIds,
+                                                fileBase64 = selectedFileBase64,
+                                                isImage = selectedFileIsImage,
+                                                imageBitmap = selectedImageBitmap,
+                                                onClearAttachment = {
+                                                    selectedFileBase64 = null
+                                                    selectedImageBitmap = null
+                                                    selectedFileName = null
+                                                },
+                                                onResponseReceived = {
+                                                    fetchHistory(serverIp)
+                                                }
+                                            )
+                                            inputText = ""
+                                        }
                                     }
                                 }),
                                 colors = OutlinedTextFieldDefaults.colors(
@@ -689,29 +744,33 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                                 modifier = Modifier.weight(1f)
                             )
 
-                            IconButton(
+                             IconButton(
                                 onClick = {
                                     if (inputText.isNotEmpty() || selectedFileBase64 != null) {
-                                        sendMessage(
-                                            text = inputText,
-                                            agent = currentAgent,
-                                            isConnected = isConnected,
-                                            serverIp = serverIp,
-                                            chatSessions = chatSessions,
-                                            currentSessionIds = currentSessionIds,
-                                            fileBase64 = selectedFileBase64,
-                                            isImage = selectedFileIsImage,
-                                            imageBitmap = selectedImageBitmap,
-                                            onClearAttachment = {
-                                                selectedFileBase64 = null
-                                                selectedImageBitmap = null
-                                                selectedFileName = null
-                                            },
-                                            onResponseReceived = {
-                                                fetchHistory(serverIp)
-                                            }
-                                        )
-                                        inputText = ""
+                                        if (currentAgent == "quiz") {
+                                            launchQuizAction()
+                                        } else {
+                                            sendMessage(
+                                                text = inputText,
+                                                agent = currentAgent,
+                                                isConnected = isConnected,
+                                                serverIp = serverIp,
+                                                chatSessions = chatSessions,
+                                                currentSessionIds = currentSessionIds,
+                                                fileBase64 = selectedFileBase64,
+                                                isImage = selectedFileIsImage,
+                                                imageBitmap = selectedImageBitmap,
+                                                onClearAttachment = {
+                                                    selectedFileBase64 = null
+                                                    selectedImageBitmap = null
+                                                    selectedFileName = null
+                                                },
+                                                onResponseReceived = {
+                                                    fetchHistory(serverIp)
+                                                }
+                                            )
+                                            inputText = ""
+                                        }
                                     }
                                 },
                                 colors = IconButtonDefaults.iconButtonColors(containerColor = PrimaryIndigo)
@@ -735,7 +794,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                             .padding(vertical = 8.dp),
                         horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally)
                     ) {
-                        val agents = listOf("study", "planner", "expense", "content")
+                        val agents = listOf("study", "planner", "expense", "content", "quiz")
                         agents.forEach { agent ->
                             Box(
                                 modifier = Modifier
@@ -754,25 +813,112 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                         }
                     }
 
-
-
-                    LazyColumn(
-                        state = listState,
-                        modifier = Modifier
-                            .weight(1f)
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp),
-                        contentPadding = PaddingValues(vertical = 12.dp)
-                    ) {
-                        items(currentHistory) { message ->
-                            ChatBubble(message = message, onPlayTTS = { speak(message.text) })
+                    if (currentAgent == "quiz") {
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxWidth()
+                                .padding(24.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(90.dp)
+                                    .background(PrimaryIndigo.copy(alpha = 0.15f), shape = RoundedCornerShape(24.dp)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.PlayArrow,
+                                    contentDescription = "Quiz Icon",
+                                    tint = PrimaryIndigo,
+                                    modifier = Modifier.size(50.dp)
+                                )
+                            }
+                            
+                            Spacer(modifier = Modifier.height(24.dp))
+                            
+                            Text(
+                                text = "Space Invaders Quiz",
+                                color = Color.White,
+                                fontSize = 24.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            
+                            Spacer(modifier = Modifier.height(8.dp))
+                            
+                            Text(
+                                text = "Spawn dynamic MCQs from your custom topic or notes. Control your ship to shoot down correct answers!",
+                                color = TextMuted,
+                                fontSize = 13.sp,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.padding(horizontal = 16.dp)
+                            )
+                            
+                            Spacer(modifier = Modifier.height(32.dp))
+                            
+                            if (isGeneratingQuiz) {
+                                CircularProgressIndicator(color = SecondaryCyan, modifier = Modifier.size(40.dp))
+                                Spacer(modifier = Modifier.height(16.dp))
+                                Text(
+                                    text = "Analyzing material & spawning meteors...",
+                                    color = SecondaryCyan,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Medium
+                                )
+                            } else {
+                                val isInputReady = inputText.trim().isNotEmpty() || selectedFileBase64 != null
+                                if (isInputReady) {
+                                    Button(
+                                        onClick = { launchQuizAction() },
+                                        colors = ButtonDefaults.buttonColors(containerColor = PrimaryIndigo),
+                                        shape = RoundedCornerShape(14.dp),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(56.dp)
+                                    ) {
+                                        Icon(Icons.Default.PlayArrow, contentDescription = "Play Icon", tint = Color.White)
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text("LAUNCH QUIZ GAME", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                                    }
+                                } else {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .background(DarkSurface, shape = RoundedCornerShape(12.dp))
+                                            .padding(16.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text(
+                                            text = "💡 Type a topic or attach a file below to start the quiz!",
+                                            color = TextMuted,
+                                            fontSize = 13.sp,
+                                            textAlign = TextAlign.Center
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        LazyColumn(
+                            state = listState,
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp),
+                            verticalArrangement = Arrangement.spacedBy(12.dp),
+                            contentPadding = PaddingValues(vertical = 12.dp)
+                        ) {
+                            items(currentHistory) { message ->
+                                ChatBubble(message = message, onPlayTTS = { speak(message.text) })
+                            }
                         }
                     }
                 }
             }
         }
     }
+}
 
     @Composable
     fun ChatBubble(message: ChatMessage, onPlayTTS: () -> Unit) {
@@ -1092,5 +1238,400 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             }
         }
         return result
+    }
+
+    private fun startQuizGame(
+        inputText: String,
+        selectedFileBase64: String?,
+        selectedFileIsImage: Boolean,
+        serverIp: String,
+        currentSessionIds: MutableMap<String, String?>,
+        onSuccess: (List<GameQuestion>) -> Unit
+    ) {
+        val payload = mutableMapOf<String, Any?>()
+        if (!selectedFileBase64.isNullOrEmpty()) {
+            payload["content"] = selectedFileBase64
+            payload["is_image"] = selectedFileIsImage
+        }
+        if (inputText.isNotEmpty()) {
+            payload["topic"] = inputText
+        }
+        val currentId = currentSessionIds["quiz"]
+        if (currentId != null && !currentId.startsWith("temp_")) {
+            payload["session_id"] = currentId
+        }
+
+        val url = "http://$serverIp:8000/api/agents/quiz/generate"
+        makeHttpRequest(
+            url = url,
+            bodyJson = gson.toJson(payload),
+            onSuccess = { res ->
+                try {
+                    val resMap = gson.fromJson<Map<String, Any?>>(res, object : com.google.gson.reflect.TypeToken<Map<String, Any?>>() {}.type)
+                    val newSessionId = resMap?.get("session_id") as? String
+                    runOnUiThread {
+                        if (newSessionId != null) {
+                            currentSessionIds["quiz"] = newSessionId
+                        }
+                    }
+                    val quizListRaw = resMap?.get("quiz") as? List<Map<String, Any?>>
+                    if (quizListRaw != null) {
+                        val questionsList = quizListRaw.mapNotNull { qMap ->
+                            val q = qMap["question"] as? String ?: return@mapNotNull null
+                            val opts = qMap["options"] as? List<String> ?: return@mapNotNull null
+                            val correct = (qMap["correctIndex"] as? Number)?.toInt() ?: 0
+                            GameQuestion(q, opts, correct)
+                        }
+                        runOnUiThread {
+                            onSuccess(questionsList)
+                        }
+                    } else {
+                        runOnUiThread {
+                            Toast.makeText(this, "Failed to parse quiz response", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                } catch (e: Exception) {
+                    runOnUiThread {
+                        Toast.makeText(this, "Quiz generation error: ${e.message}", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            },
+            onError = { err ->
+                runOnUiThread {
+                    Toast.makeText(this, "Connection error: $err", Toast.LENGTH_SHORT).show()
+                }
+            }
+        )
+    }
+}
+
+data class GameQuestion(
+    val question: String,
+    val options: List<String>,
+    val correctIndex: Int
+)
+
+data class Meteor(val x: Float, val y: Float, val optionIndex: Int, val text: String)
+data class Laser(val x: Float, val y: Float)
+
+@Composable
+fun GameScreen(
+    questions: List<GameQuestion>,
+    serverIp: String,
+    onBackToChat: () -> Unit,
+    onPlayAgain: () -> Unit
+) {
+    var currentQuestionIdx by remember { mutableStateOf(0) }
+    var score by remember { mutableStateOf(0) }
+    var lives by remember { mutableStateOf(3) }
+    var isOver by remember { mutableStateOf(false) }
+    var isWon by remember { mutableStateOf(false) }
+
+    if (questions.isEmpty()) {
+        Box(modifier = Modifier.fillMaxSize().background(Color(0xFF0F172A)), contentAlignment = Alignment.Center) {
+            Text("No questions loaded", color = Color.White)
+        }
+        return
+    }
+
+    val currentQuestion = questions.getOrNull(currentQuestionIdx) ?: questions.first()
+
+    // Screen dimensions
+    var width by remember { mutableStateOf(0f) }
+    var height by remember { mutableStateOf(0f) }
+
+    // SpaceShip position
+    var shipX by remember { mutableStateOf(0f) }
+
+    // Lists of game objects
+    val lasers = remember { mutableStateListOf<Laser>() }
+    val meteors = remember { mutableStateListOf<Meteor>() }
+
+    // Initialize meteors when question changes
+    LaunchedEffect(currentQuestionIdx, width) {
+        if (width > 0) {
+            shipX = width / 2f
+            lasers.clear()
+            meteors.clear()
+            // Spawn 4 meteors horizontally spaced
+            val step = width / 5f
+            for (i in 0 until 4) {
+                meteors.add(
+                    Meteor(
+                        x = step * (i + 1),
+                        y = 100f + (Math.random() * 80).toFloat(), // staggered heights
+                        optionIndex = i,
+                        text = when(i) {
+                            0 -> "A"
+                            1 -> "B"
+                            2 -> "C"
+                            else -> "D"
+                        }
+                    )
+                )
+            }
+        }
+    }
+
+    // Game loop ticks (60 FPS)
+    LaunchedEffect(isOver, isWon, currentQuestionIdx, width, height) {
+        while (!isOver && !isWon) {
+            delay(16L) // ~60fps
+
+            // 2. Move lasers up (thread-safe copy updates) - reduced speed to 8f
+            val updatedLasers = lasers.map { it.copy(y = it.y - 8f) }.filter { it.y >= 0 }
+            lasers.clear()
+            lasers.addAll(updatedLasers)
+
+            // 3. Move meteors down (thread-safe copy updates)
+            val updatedMeteors = meteors.map {
+                var newY = it.y + 4f
+                if (newY > height && height > 0) {
+                    newY = 50f
+                }
+                it.copy(y = newY)
+            }
+            meteors.clear()
+            meteors.addAll(updatedMeteors)
+
+            // 4. Collision detection
+            var hitWrong = false
+            var hitCorrect = false
+            val lasersToRemove = mutableListOf<Laser>()
+            
+            for (laser in lasers) {
+                for (meteor in meteors) {
+                    val distance = Math.hypot((laser.x - meteor.x).toDouble(), (laser.y - meteor.y).toDouble())
+                    if (distance < 50.0) { // Collision threshold
+                        lasersToRemove.add(laser)
+                        if (meteor.optionIndex == currentQuestion.correctIndex) {
+                            hitCorrect = true
+                        } else {
+                            hitWrong = true
+                        }
+                    }
+                }
+            }
+
+            if (lasersToRemove.isNotEmpty()) {
+                lasers.removeAll(lasersToRemove)
+            }
+            
+            if (hitCorrect) {
+                score += 10
+                if (currentQuestionIdx + 1 < questions.size) {
+                    currentQuestionIdx++
+                } else {
+                    isWon = true
+                }
+            } else if (hitWrong) {
+                lives--
+                if (lives <= 0) {
+                    isOver = true
+                } else {
+                    // Reset ALL meteors to top and clear lasers
+                    val resetMeteors = meteors.map {
+                        it.copy(y = 100f + (Math.random() * 80).toFloat())
+                    }
+                    meteors.clear()
+                    meteors.addAll(resetMeteors)
+                    lasers.clear()
+                }
+            }
+        }
+    }
+
+    // Layout
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xFF0F172A))
+            .padding(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        // Top row: Back button, score, lives
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(onClick = onBackToChat) {
+                Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = Color.White)
+            }
+            Text("Score: $score", color = Color(0xFF6366F1), fontSize = 16.sp, fontWeight = FontWeight.Bold)
+            Text("Lives: " + "❤️".repeat(lives), color = Color.Red, fontSize = 14.sp)
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        if (isOver || isWon) {
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth(),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        text = if (isWon) "🏆 VICTORY!" else "💥 GAME OVER",
+                        color = if (isWon) Color(0xFF06B6D4) else Color.Red,
+                        fontSize = 28.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text("Final Score: $score", color = Color.White, fontSize = 18.sp)
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Button(
+                        onClick = onPlayAgain,
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF6366F1))
+                    ) {
+                        Text("Play Again", color = Color.White)
+                    }
+                }
+            }
+        } else {
+            // Display Question
+            Text(
+                text = "Q${currentQuestionIdx + 1}/${questions.size}: ${currentQuestion.question}",
+                color = Color.White,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.SemiBold,
+                textAlign = TextAlign.Center,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(8.dp)
+            )
+
+            // Game Canvas
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .background(Color(0xFF020617), shape = RoundedCornerShape(12.dp))
+                    .pointerInput(Unit) {
+                        detectDragGestures { change, dragAmount ->
+                            change.consume()
+                            shipX = (shipX + dragAmount.x).coerceIn(40f, width - 40f)
+                        }
+                    }
+                    .pointerInput(Unit) {
+                        detectTapGestures {
+                            // Shoot laser manually
+                            lasers.add(Laser(shipX, height - 120f))
+                        }
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                Canvas(modifier = Modifier
+                    .fillMaxSize()
+                    .onGloballyPositioned {
+                        width = it.size.width.toFloat()
+                        height = it.size.height.toFloat()
+                        if (shipX == 0f) shipX = width / 2f
+                    }) {
+                    // Draw Stars Background
+                    for (i in 0 until 15) {
+                        drawCircle(
+                            color = Color.White.copy(alpha = 0.3f),
+                            radius = 2f,
+                            center = androidx.compose.ui.geometry.Offset((width * (i * 7 % 10) / 10f), (height * (i * 3 % 10) / 10f))
+                        )
+                    }
+
+                    // Draw Lasers
+                    lasers.forEach { laser ->
+                        drawRect(
+                            color = Color(0xFF06B6D4), // Cyan laser
+                            topLeft = androidx.compose.ui.geometry.Offset(laser.x - 2f, laser.y - 10f),
+                            size = androidx.compose.ui.geometry.Size(4f, 20f)
+                        )
+                    }
+
+                    // Native paint for centering letter A, B, C, D in meteor circles
+                    val textPaint = android.graphics.Paint().apply {
+                        color = android.graphics.Color.WHITE
+                        textSize = 36f
+                        textAlign = android.graphics.Paint.Align.CENTER
+                        isFakeBoldText = true
+                    }
+
+                    // Draw Meteors (Alien targets labeled A, B, C, D)
+                    meteors.forEach { meteor ->
+                        // Draw outer circle
+                        drawCircle(
+                            color = Color(0xFFF43F5E), // Reddish meteor
+                            radius = 30f,
+                            center = androidx.compose.ui.geometry.Offset(meteor.x, meteor.y)
+                        )
+                        // Draw centered option letter directly on canvas (no layout offset drift!)
+                        drawContext.canvas.nativeCanvas.drawText(
+                            meteor.text,
+                            meteor.x,
+                            meteor.y + 12f, // center offset for 36f size
+                            textPaint
+                        )
+                    }
+
+                    // Draw Player Ship (Indigo triangle/space craft)
+                    val shipPath = androidx.compose.ui.graphics.Path().apply {
+                        moveTo(shipX, height - 120f)
+                        lineTo(shipX - 30f, height - 70f)
+                        lineTo(shipX + 30f, height - 70f)
+                        close()
+                    }
+                    drawPath(
+                        path = shipPath,
+                        color = Color(0xFF6366F1) // Indigo ship
+                    )
+                }
+
+                // Floating Fire Button
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(24.dp)
+                        .size(70.dp)
+                        .background(Color(0xFFEF4444), shape = CircleShape)
+                        .clickable {
+                            if (height > 0) {
+                                lasers.add(Laser(shipX, height - 120f))
+                            }
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "FIRE",
+                        color = Color.White,
+                        fontWeight = FontWeight.Black,
+                        fontSize = 16.sp
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // Display MCQ Options details at the bottom of the screen
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color(0xFF1E293B), shape = RoundedCornerShape(8.dp))
+                    .padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                currentQuestion.options.forEachIndexed { idx, option ->
+                    val letter = when(idx) {
+                        0 -> "A"
+                        1 -> "B"
+                        2 -> "C"
+                        else -> "D"
+                    }
+                    Text(
+                        text = "$letter: $option",
+                        color = Color.White,
+                        fontSize = 12.sp
+                    )
+                }
+            }
+        }
     }
 }

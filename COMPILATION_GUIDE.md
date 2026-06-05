@@ -38,8 +38,6 @@ Ensure USB Debugging is enabled on your iQOO device and it is connected, then ru
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
----
-
 ## Troubleshooting
 
 ### Gradle Daemon Locks / Freeze

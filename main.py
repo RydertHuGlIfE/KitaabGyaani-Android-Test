@@ -16,6 +16,7 @@ from agents.study_agent import StudyAgent
 from agents.planner_agent import PlannerAgent
 from agents.expense_agent import ExpenseAgent
 from agents.content_agent import ContentAgent
+from agents.quiz_agent import QuizAgent
 
 app = FastAPI(title="KitaabGyaani Backend")
 
@@ -36,13 +37,15 @@ study_agent = StudyAgent(llm_service, ocr_service, pdf_service)
 planner_agent = PlannerAgent(llm_service, ocr_service, pdf_service)
 expense_agent = ExpenseAgent()
 content_agent = ContentAgent(llm_service)
+quiz_agent = QuizAgent(llm_service, pdf_service)
 
 HISTORY_FILE = "chats_history.json"
 chat_history_db = {
     "study": [],
     "planner": [],
     "expense": [],
-    "content": []
+    "content": [],
+    "quiz": []
 }
 
 def load_chat_history():
@@ -518,6 +521,12 @@ class ContentRequest(BaseModel):
     context: str
     session_id: Optional[str] = None
 
+class QuizRequest(BaseModel):
+    content: Optional[str] = None
+    is_image: bool = False
+    topic: Optional[str] = None
+    session_id: Optional[str] = None
+
 @app.post("/api/chat/history")
 async def get_chat_history():
     return chat_history_db
@@ -529,10 +538,39 @@ async def clear_chat_history():
         "study": [],
         "planner": [],
         "expense": [],
-        "content": []
+        "content": [],
+        "quiz": []
     }
     save_chat_history()
     return {"status": "success"}
+
+@app.post("/api/agents/quiz/generate")
+async def generate_quiz_endpoint(req: QuizRequest):
+    try:
+        session, session_id = get_or_create_session("quiz", req.session_id)
+        result = await quiz_agent.generate_quiz(req.content, req.is_image, req.topic)
+        
+        user_msg = f"Quiz on: {req.topic}" if req.topic else "Quiz from document"
+        user_msg_dict = {
+            "sender": "user",
+            "text": user_msg,
+            "image_base64": req.content if (req.is_image and req.content) else None,
+            "is_image": req.is_image
+        }
+        agent_msg_dict = {
+            "sender": "agent",
+            "text": f"Generated {len(result)} quiz questions for the game!",
+            "image_base64": None,
+            "is_image": False
+        }
+        actual_session_id = update_session_title_and_append("quiz", session_id, user_msg_dict, agent_msg_dict)
+        return {
+            "status": "success",
+            "session_id": actual_session_id,
+            "quiz": result
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/agents/study/process")
 async def process_study(req: StudyRequest):
