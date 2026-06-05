@@ -109,6 +109,10 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         var isConnected by remember { mutableStateOf(false) }
         var currentAgent by remember { mutableStateOf("study") }
         var inputText by remember { mutableStateOf("") }
+        var selectedImageBitmap by remember { mutableStateOf<Bitmap?>(null) }
+        var selectedFileBase64 by remember { mutableStateOf<String?>(null) }
+        var selectedFileIsImage by remember { mutableStateOf(false) }
+        var selectedFileName by remember { mutableStateOf<String?>(null) }
 
         val chatHistories = remember {
             mutableStateMapOf<String, List<ChatMessage>>().apply {
@@ -189,53 +193,24 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             contract = ActivityResultContracts.TakePicturePreview()
         ) { bitmap: Bitmap? ->
             bitmap?.let { capturedBitmap ->
-                val base64 = bitmapToBase64(capturedBitmap)
-                val history = chatHistories[currentAgent] ?: emptyList()
-                chatHistories[currentAgent] = history + ChatMessage(sender = "user", text = "Captured Image for analysis", bitmap = capturedBitmap)
+                selectedImageBitmap = capturedBitmap
+                selectedFileBase64 = bitmapToBase64(capturedBitmap)
+                selectedFileIsImage = true
+                selectedFileName = "camera_capture.jpg"
+            }
+        }
 
-                if (isConnected) {
-                    val payload = if (currentAgent == "expense") {
-                        mapOf("image_base64" to base64)
-                    } else {
-                        mapOf("file_base64" to base64, "is_image" to true)
-                    }
-                    webSocketClient?.send(
-                        WebSocketRequest(
-                            id = UUID.randomUUID().toString(),
-                            agent = currentAgent,
-                            action = if (currentAgent == "expense") "process_receipt" else "process_material",
-                            payload = payload
-                        )
-                    )
-                } else {
-                    val url = if (currentAgent == "expense") {
-                        "http://$serverIp:8000/api/agents/expense/process"
-                    } else {
-                        "http://$serverIp:8000/api/agents/study/process"
-                    }
-                    val bodyJson = if (currentAgent == "expense") {
-                        gson.toJson(mapOf("image_base64" to base64))
-                    } else {
-                        gson.toJson(mapOf("content" to base64, "is_image" to true))
-                    }
-                    makeHttpRequest(
-                        url = url,
-                        bodyJson = bodyJson,
-                        onSuccess = { res ->
-                            val formattedText = formatAgentResponse(currentAgent, res)
-                            runOnUiThread {
-                                val currentList = chatHistories[currentAgent] ?: emptyList()
-                                chatHistories[currentAgent] = currentList + ChatMessage(sender = "agent", text = formattedText)
-                            }
-                        },
-                        onError = { err ->
-                            runOnUiThread {
-                                val currentList = chatHistories[currentAgent] ?: emptyList()
-                                chatHistories[currentAgent] = currentList + ChatMessage(sender = "agent", text = "Error: $err")
-                            }
-                        }
-                    )
+        val cameraPermissionLauncher = rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.RequestPermission()
+        ) { isGranted ->
+            if (isGranted) {
+                try {
+                    cameraLauncher.launch(null)
+                } catch (e: Exception) {
+                    Toast.makeText(context, "Error: ${e.message}", Toast.LENGTH_SHORT).show()
                 }
+            } else {
+                Toast.makeText(context, "Camera permission denied", Toast.LENGTH_SHORT).show()
             }
         }
 
@@ -246,37 +221,16 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                 val contentResolver = context.contentResolver
                 val base64 = uriToBase64(it, contentResolver)
                 if (base64 != null) {
-                    val isImage = contentResolver.getType(it)?.startsWith("image/") == true
-                    val history = chatHistories[currentAgent] ?: emptyList()
-                    chatHistories[currentAgent] = history + ChatMessage(sender = "user", text = "Uploaded file for processing")
-
-                    if (isConnected) {
-                        webSocketClient?.send(
-                            WebSocketRequest(
-                                id = UUID.randomUUID().toString(),
-                                agent = "study",
-                                action = "process_material",
-                                payload = mapOf("file_base64" to base64, "is_image" to isImage)
-                            )
-                        )
-                    } else {
-                        makeHttpRequest(
-                            url = "http://$serverIp:8000/api/agents/study/process",
-                            bodyJson = gson.toJson(mapOf("content" to base64, "is_image" to isImage)),
-                            onSuccess = { res ->
-                                val formattedText = formatAgentResponse("study", res)
-                                runOnUiThread {
-                                    val currentList = chatHistories[currentAgent] ?: emptyList()
-                                    chatHistories[currentAgent] = currentList + ChatMessage(sender = "agent", text = formattedText)
-                                }
-                            },
-                            onError = { err ->
-                                runOnUiThread {
-                                    val currentList = chatHistories[currentAgent] ?: emptyList()
-                                    chatHistories[currentAgent] = currentList + ChatMessage(sender = "agent", text = "Error: $err")
-                                }
-                            }
-                        )
+                    selectedImageBitmap = null
+                    selectedFileBase64 = base64
+                    selectedFileIsImage = contentResolver.getType(it)?.startsWith("image/") == true
+                    selectedFileName = getFileName(it, contentResolver) ?: "document"
+                    if (selectedFileIsImage) {
+                        try {
+                            val inputStream = contentResolver.openInputStream(it)
+                            selectedImageBitmap = BitmapFactory.decodeStream(inputStream)
+                            inputStream?.close()
+                        } catch (e: Exception) {}
                     }
                 }
             }
@@ -322,16 +276,83 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                         .navigationBarsPadding()
                         .imePadding()
                 ) {
+                    if (selectedFileBase64 != null) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(bottom = 8.dp)
+                                .background(DarkBackground, shape = RoundedCornerShape(12.dp))
+                                .padding(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            if (selectedImageBitmap != null) {
+                                androidx.compose.foundation.Image(
+                                    bitmap = selectedImageBitmap!!.asImageBitmap(),
+                                    contentDescription = "Attachment Preview",
+                                    modifier = Modifier
+                                        .size(48.dp)
+                                        .clip(RoundedCornerShape(8.dp))
+                                )
+                            } else {
+                                Box(
+                                    modifier = Modifier
+                                        .size(48.dp)
+                                        .background(PrimaryIndigo, shape = RoundedCornerShape(8.dp)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(Icons.Default.Share, contentDescription = "File", tint = Color.White)
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.width(12.dp))
+
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = selectedFileName ?: "Attached File",
+                                    color = TextLight,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    text = if (selectedFileIsImage) "Ready to analyze image" else "Ready to analyze document",
+                                    color = TextMuted,
+                                    fontSize = 11.sp
+                                )
+                            }
+
+                            IconButton(onClick = {
+                                selectedFileBase64 = null
+                                selectedImageBitmap = null
+                                selectedFileName = null
+                            }) {
+                                Icon(Icons.Default.Close, contentDescription = "Clear Attachment", tint = Color.Red)
+                            }
+                        }
+                    }
+
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         IconButton(
-                            onClick = { cameraLauncher.launch(null) },
+                            onClick = {
+                                val hasPermission = androidx.core.content.ContextCompat.checkSelfPermission(
+                                    context, android.Manifest.permission.CAMERA
+                                ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                                if (hasPermission) {
+                                    try {
+                                        cameraLauncher.launch(null)
+                                    } catch (e: Exception) {
+                                        Toast.makeText(context, "Error: ${e.message}", Toast.LENGTH_SHORT).show()
+                                    }
+                                } else {
+                                    cameraPermissionLauncher.launch(android.Manifest.permission.CAMERA)
+                                }
+                            },
                             colors = IconButtonDefaults.iconButtonColors(containerColor = DarkBackground)
                         ) {
-                            Icon(Icons.Default.CameraAlt, contentDescription = "Camera", tint = SecondaryCyan)
+                            Icon(Icons.Default.Add, contentDescription = "Camera", tint = SecondaryCyan)
                         }
 
                         IconButton(
@@ -354,8 +375,22 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                             maxLines = 3,
                             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                             keyboardActions = KeyboardActions(onSend = {
-                                if (inputText.isNotEmpty()) {
-                                    sendMessage(inputText, currentAgent, isConnected, serverIp, chatHistories)
+                                if (inputText.isNotEmpty() || selectedFileBase64 != null) {
+                                    sendMessage(
+                                        text = inputText,
+                                        agent = currentAgent,
+                                        isConnected = isConnected,
+                                        serverIp = serverIp,
+                                        chatHistories = chatHistories,
+                                        fileBase64 = selectedFileBase64,
+                                        isImage = selectedFileIsImage,
+                                        imageBitmap = selectedImageBitmap,
+                                        onClearAttachment = {
+                                            selectedFileBase64 = null
+                                            selectedImageBitmap = null
+                                            selectedFileName = null
+                                        }
+                                    )
                                     inputText = ""
                                 }
                             }),
@@ -363,16 +398,29 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                                 focusedTextColor = TextLight,
                                 unfocusedTextColor = TextLight,
                                 focusedBorderColor = PrimaryIndigo,
-                                unfocusedBorderColor = DarkBackground,
-                                containerColor = DarkBackground
+                                unfocusedBorderColor = DarkBackground
                             ),
                             modifier = Modifier.weight(1f)
                         )
 
                         IconButton(
                             onClick = {
-                                if (inputText.isNotEmpty()) {
-                                    sendMessage(inputText, currentAgent, isConnected, serverIp, chatHistories)
+                                if (inputText.isNotEmpty() || selectedFileBase64 != null) {
+                                    sendMessage(
+                                        text = inputText,
+                                        agent = currentAgent,
+                                        isConnected = isConnected,
+                                        serverIp = serverIp,
+                                        chatHistories = chatHistories,
+                                        fileBase64 = selectedFileBase64,
+                                        isImage = selectedFileIsImage,
+                                        imageBitmap = selectedImageBitmap,
+                                        onClearAttachment = {
+                                            selectedFileBase64 = null
+                                            selectedImageBitmap = null
+                                            selectedFileName = null
+                                        }
+                                    )
                                     inputText = ""
                                 }
                             },
@@ -510,60 +558,98 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         agent: String,
         isConnected: Boolean,
         serverIp: String,
-        chatHistories: MutableMap<String, List<ChatMessage>>
+        chatHistories: MutableMap<String, List<ChatMessage>>,
+        fileBase64: String? = null,
+        isImage: Boolean = false,
+        imageBitmap: Bitmap? = null,
+        onClearAttachment: () -> Unit = {}
     ) {
         val currentList = chatHistories[agent] ?: emptyList()
-        chatHistories[agent] = currentList + ChatMessage(sender = "user", text = text)
+        val userMsgText = if (text.isNotEmpty()) text else if (fileBase64 != null) "Attached document for analysis" else ""
+        if (userMsgText.isEmpty() && fileBase64 == null) return
+
+        chatHistories[agent] = currentList + ChatMessage(sender = "user", text = userMsgText, bitmap = imageBitmap)
 
         if (isConnected) {
-            val payload = when (agent) {
-                "study" -> mapOf("content" to text, "is_image" to false)
-                "planner" -> {
-                    val topics = text.split(",").map { it.trim() }
-                    mapOf(
-                        "exam_name" to "Upcoming Exam",
-                        "exam_date" to "2026-06-25",
-                        "syllabus" to topics,
-                        "topics_completed" to emptyList<String>()
-                    )
+            val payload = if (fileBase64 != null) {
+                if (agent == "expense") {
+                    mapOf("image_base64" to fileBase64, "prompt_text" to text)
+                } else {
+                    mapOf("file_base64" to fileBase64, "is_image" to isImage, "prompt_text" to text)
                 }
-                "content" -> mapOf("task" to text, "context" to "No context provided")
-                else -> mapOf("content" to text)
+            } else {
+                when (agent) {
+                    "study" -> mapOf("content" to text, "is_image" to false)
+                    "planner" -> {
+                        val topics = text.split(",").map { it.trim() }
+                        mapOf(
+                            "exam_name" to "Upcoming Exam",
+                            "exam_date" to "2026-06-25",
+                            "syllabus" to topics,
+                            "topics_completed" to emptyList<String>()
+                        )
+                    }
+                    "content" -> mapOf("task" to text, "context" to "No context provided")
+                    else -> mapOf("content" to text)
+                }
             }
+
             webSocketClient?.send(
                 WebSocketRequest(
                     id = UUID.randomUUID().toString(),
                     agent = agent,
-                    action = when (agent) {
-                        "study" -> "process_material"
-                        "planner" -> "generate_schedule"
-                        "content" -> "draft_content"
-                        else -> "process"
+                    action = if (fileBase64 != null) {
+                        if (agent == "expense") "process_receipt" else "process_material"
+                    } else {
+                        when (agent) {
+                            "study" -> "process_material"
+                            "planner" -> "generate_schedule"
+                            "content" -> "draft_content"
+                            else -> "process"
+                        }
                     },
                     payload = payload
                 )
             )
         } else {
-            val url = when (agent) {
-                "study" -> "http://$serverIp:8000/api/agents/study/process"
-                "planner" -> "http://$serverIp:8000/api/agents/planner/schedule"
-                "content" -> "http://$serverIp:8000/api/agents/content/draft"
-                else -> "http://$serverIp:8000/api/agents/study/process"
-            }
-            val payload = when (agent) {
-                "study" -> mapOf("content" to text, "is_image" to false)
-                "planner" -> {
-                    val topics = text.split(",").map { it.trim() }
-                    mapOf(
-                        "exam_name" to "Upcoming Exam",
-                        "exam_date" to "2026-06-25",
-                        "syllabus" to topics,
-                        "topics_completed" to emptyList<String>()
-                    )
+            val url = if (fileBase64 != null) {
+                if (agent == "expense") {
+                    "http://$serverIp:8000/api/agents/expense/process"
+                } else {
+                    "http://$serverIp:8000/api/agents/study/process"
                 }
-                "content" -> mapOf("task" to text, "context" to "No context provided")
-                else -> mapOf("content" to text)
+            } else {
+                when (agent) {
+                    "study" -> "http://$serverIp:8000/api/agents/study/process"
+                    "planner" -> "http://$serverIp:8000/api/agents/planner/schedule"
+                    "content" -> "http://$serverIp:8000/api/agents/content/draft"
+                    else -> "http://$serverIp:8000/api/agents/study/process"
+                }
             }
+
+            val payload = if (fileBase64 != null) {
+                if (agent == "expense") {
+                    mapOf("image_base64" to fileBase64, "prompt_text" to text)
+                } else {
+                    mapOf("content" to fileBase64, "is_image" to isImage, "prompt_text" to text)
+                }
+            } else {
+                when (agent) {
+                    "study" -> mapOf("content" to text, "is_image" to false)
+                    "planner" -> {
+                        val topics = text.split(",").map { it.trim() }
+                        mapOf(
+                            "exam_name" to "Upcoming Exam",
+                            "exam_date" to "2026-06-25",
+                            "syllabus" to topics,
+                            "topics_completed" to emptyList<String>()
+                        )
+                    }
+                    "content" -> mapOf("task" to text, "context" to "No context provided")
+                    else -> mapOf("content" to text)
+                }
+            }
+
             makeHttpRequest(
                 url = url,
                 bodyJson = gson.toJson(payload),
@@ -582,6 +668,8 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                 }
             )
         }
+
+        onClearAttachment()
     }
 
     private fun formatAgentResponse(agent: String, jsonResponse: String): String {
@@ -657,5 +745,30 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         bitmap.compress(Bitmap.CompressFormat.JPEG, 90, byteArrayOutputStream)
         val byteArray = byteArrayOutputStream.toByteArray()
         return android.util.Base64.encodeToString(byteArray, android.util.Base64.NO_WRAP)
+    }
+
+    private fun getFileName(uri: Uri, contentResolver: ContentResolver): String? {
+        var result: String? = null
+        if (uri.scheme == "content") {
+            val cursor = contentResolver.query(uri, null, null, null, null)
+            try {
+                if (cursor != null && cursor.moveToFirst()) {
+                    val index = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                    if (index >= 0) {
+                        result = cursor.getString(index)
+                    }
+                }
+            } finally {
+                cursor?.close()
+            }
+        }
+        if (result == null) {
+            result = uri.path
+            val cut = result?.lastIndexOf('/') ?: -1
+            if (cut != -1) {
+                result = result?.substring(cut + 1)
+            }
+        }
+        return result
     }
 }

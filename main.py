@@ -353,6 +353,7 @@ manager = ConnectionManager()
 class StudyRequest(BaseModel):
     content: str
     is_image: bool = False
+    prompt_text: Optional[str] = None
 
 class PlannerRequest(BaseModel):
     exam_name: str
@@ -362,6 +363,7 @@ class PlannerRequest(BaseModel):
 
 class ExpenseRequest(BaseModel):
     image_base64: str
+    prompt_text: Optional[str] = None
 
 class ContentRequest(BaseModel):
     task: str
@@ -370,7 +372,7 @@ class ContentRequest(BaseModel):
 @app.post("/api/agents/study/process")
 async def process_study(req: StudyRequest):
     try:
-        return await study_agent.process_material(req.content, req.is_image)
+        return await study_agent.process_material(req.content, req.is_image, req.prompt_text)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -386,7 +388,7 @@ async def process_planner(req: PlannerRequest):
 @app.post("/api/agents/expense/process")
 async def process_expense(req: ExpenseRequest):
     try:
-        return await expense_agent.process_receipt(req.image_base64)
+        return await expense_agent.process_receipt(req.image_base64, req.prompt_text)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -418,7 +420,8 @@ async def websocket_endpoint(websocket: WebSocket):
                 if agent == "study":
                     is_image = payload.get("is_image", False) or payload.get("file_base64") is not None
                     content = payload.get("file_base64") or payload.get("content", "")
-                    result = await study_agent.process_material(content, is_image)
+                    prompt_text = payload.get("prompt_text")
+                    result = await study_agent.process_material(content, is_image, prompt_text)
                 elif agent == "planner":
                     result = await planner_agent.generate_schedule(
                         payload.get("exam_name", ""),
@@ -427,7 +430,10 @@ async def websocket_endpoint(websocket: WebSocket):
                         payload.get("syllabus", [])
                     )
                 elif agent == "expense":
-                    result = await expense_agent.process_receipt(payload.get("image_base64", ""))
+                    result = await expense_agent.process_receipt(
+                        payload.get("image_base64", ""),
+                        payload.get("prompt_text")
+                    )
                 elif agent == "content":
                     result = await content_agent.draft_content(
                         payload.get("task", ""),

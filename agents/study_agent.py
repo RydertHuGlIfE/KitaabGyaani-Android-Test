@@ -9,7 +9,7 @@ class StudyAgent:
         self.ocr = ocr_service
         self.pdf = pdf_service
 
-    async def process_material(self, content: str, is_image: bool = False) -> dict:
+    async def process_material(self, content: str, is_image: bool = False, prompt_text: str = None) -> dict:
         text = content
         
         cleaned_content = content
@@ -18,23 +18,47 @@ class StudyAgent:
             
         is_pdf = cleaned_content.startswith("JVBERi")
         
+        response_text = ""
         if is_pdf:
             text = self.pdf.extract_text(content)
+            user_instruction = prompt_text or "Generate a study kit from the following text"
+            system_prompt = "You are a Study Assistant. Output your response as a valid JSON object only."
+            prompt = (
+                f"{user_instruction}:\n\n{text}\n\n"
+                "Format the output strictly as a JSON object with this structure:\n"
+                "{\n"
+                '  "summary": "detailed summary here",\n'
+                '  "flashcards": [{"q": "question", "a": "answer"}],\n'
+                '  "mcqs": [{"q": "question", "options": ["option1", "option2", "option3", "option4"], "answer": "correct_option"}]\n'
+                "}"
+            )
+            response_text = await self.llm.query_llm(prompt, system_prompt=system_prompt)
         elif is_image:
-            text = self.ocr.extract_text(content)
+            user_instruction = prompt_text or "Analyze this study material image and generate a study kit"
+            prompt = (
+                f"{user_instruction}.\n"
+                "Format the output strictly as a JSON object with this structure:\n"
+                "{\n"
+                '  "summary": "detailed summary here",\n'
+                '  "flashcards": [{"q": "question", "a": "answer"}],\n'
+                '  "mcqs": [{"q": "question", "options": ["option1", "option2", "option3", "option4"], "answer": "correct_option"}]\n'
+                "}"
+            )
+            response_text = await self.llm.query_vision_llm(cleaned_content, prompt)
+        else:
+            user_instruction = prompt_text or "Generate a study kit from the following text"
+            system_prompt = "You are a Study Assistant. Output your response as a valid JSON object only."
+            prompt = (
+                f"{user_instruction}:\n\n{text}\n\n"
+                "Format the output strictly as a JSON object with this structure:\n"
+                "{\n"
+                '  "summary": "detailed summary here",\n'
+                '  "flashcards": [{"q": "question", "a": "answer"}],\n'
+                '  "mcqs": [{"q": "question", "options": ["option1", "option2", "option3", "option4"], "answer": "correct_option"}]\n'
+                "}"
+            )
+            response_text = await self.llm.query_llm(prompt, system_prompt=system_prompt)
             
-        system_prompt = "You are a Study Assistant. Output your response as a valid JSON object only."
-        prompt = (
-            f"Generate a study kit from the following text:\n\n{text}\n\n"
-            "Format the output strictly as a JSON object with this structure:\n"
-            "{\n"
-            '  "summary": "detailed summary here",\n'
-            '  "flashcards": [{"q": "question", "a": "answer"}],\n'
-            '  "mcqs": [{"q": "question", "options": ["option1", "option2", "option3", "option4"], "answer": "correct_option"}]\n'
-            "}"
-        )
-        
-        response_text = await self.llm.query_llm(prompt, system_prompt=system_prompt)
         try:
             return json.loads(response_text)
         except json.JSONDecodeError:
@@ -46,4 +70,5 @@ class StudyAgent:
             except Exception:
                 pass
             return {"summary": response_text, "flashcards": [], "mcqs": []}
+
 

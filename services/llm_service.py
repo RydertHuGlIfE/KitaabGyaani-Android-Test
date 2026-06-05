@@ -18,3 +18,23 @@ class LLMService:
         )
         return response.choices[0].message.content
 
+    async def query_vision_llm(self, image_base64: str, prompt: str) -> str:
+        response = self.groq_client.chat.completions.create(
+            model="meta-llama/llama-4-scout-17b-16e-instruct",
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{image_base64}"
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
+        return response.choices[0].message.content
+

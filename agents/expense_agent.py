@@ -6,13 +6,13 @@ class ExpenseAgent:
     def __init__(self):
         self.client = Groq(api_key=Config.GROQ_API_KEY)
 
-    async def process_receipt(self, image_base64: str) -> dict:
+    async def process_receipt(self, image_base64: str, prompt_text: str = None) -> dict:
         if "," in image_base64:
             image_base64 = image_base64.split(",")[1]
 
+        user_instruction = prompt_text or "Analyze this receipt image. Perform OCR and extract the details as a valid JSON object. Categorize the transaction into one of these: Food, Books, Transport, Utilities, Entertainment, Others."
         prompt = (
-            "Analyze this receipt image. Perform OCR and extract the details as a valid JSON object. "
-            "Categorize the transaction into one of these: Food, Books, Transport, Utilities, Entertainment, Others. "
+            f"{user_instruction}\n"
             "Format the output strictly as a JSON object with this structure:\n"
             "{\n"
             '  "amount": 0.00,\n'
@@ -24,7 +24,7 @@ class ExpenseAgent:
         )
 
         response = self.client.chat.completions.create(
-            model="llama-3.2-11b-vision-preview",
+            model="meta-llama/llama-4-scout-17b-16e-instruct",
             messages=[
                 {
                     "role": "user",
