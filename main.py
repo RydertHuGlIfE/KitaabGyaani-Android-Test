@@ -1,6 +1,7 @@
 import time
 import json
 import os
+import uuid
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -49,7 +50,22 @@ def load_chat_history():
     try:
         if os.path.exists(HISTORY_FILE):
             with open(HISTORY_FILE, "r") as f:
-                chat_history_db = json.load(f)
+                data = json.load(f)
+                migrated = {}
+                for agent in ["study", "planner", "expense", "content"]:
+                    agent_data = data.get(agent, [])
+                    # Check if legacy format (direct list of message dicts)
+                    if agent_data and isinstance(agent_data, list) and isinstance(agent_data[0], dict) and "sender" in agent_data[0]:
+                        migrated[agent] = [{
+                            "id": "default_session",
+                            "title": "Previous Chat",
+                            "messages": agent_data
+                        }]
+                    elif agent_data and isinstance(agent_data, list) and all(isinstance(x, dict) and "messages" in x for x in agent_data):
+                        migrated[agent] = agent_data
+                    else:
+                        migrated[agent] = []
+                chat_history_db = migrated
     except Exception as e:
         print(f"Error loading chat history: {e}")
 
@@ -62,34 +78,88 @@ def save_chat_history():
 
 load_chat_history()
 
+def get_or_create_session(agent: str, session_id: Optional[str] = None, initial_title: str = "New Chat") -> tuple:
+    sessions = chat_history_db.setdefault(agent, [])
+    session = None
+    if session_id:
+        for s in sessions:
+            if s.get("id") == session_id:
+                session = s
+                break
+    
+    if not session:
+        session_id = str(uuid.uuid4())
+        session = {
+            "id": session_id,
+            "title": initial_title,
+            "messages": []
+        }
+        sessions.append(session)
+    return session, session_id
+
+def update_session_title_and_append(agent: str, session_id: Optional[str], user_msg: dict, agent_msg: dict) -> str:
+    session, actual_session_id = get_or_create_session(agent, session_id)
+    
+    # Generate cleaner title from user prompt if default
+    if session["title"] == "New Chat" or session["title"] == "Previous Chat":
+        text = user_msg.get("text", "")
+        if text:
+            title = text[:30].strip()
+            if len(text) > 30:
+                title += "..."
+            session["title"] = title
+        elif user_msg.get("image_base64"):
+            session["title"] = "Attached Image"
+        else:
+            session["title"] = "Document Chat"
+            
+    session["messages"].append(user_msg)
+    session["messages"].append(agent_msg)
+    session["messages"] = session["messages"][-30:] # Keep active session length reasonable
+    
+    save_chat_history()
+    return actual_session_id
+
 def format_agent_response(agent: str, data: dict) -> str:
     try:
+        if isinstance(data, str):
+            return data
+        if isinstance(data, dict) and "response" in data:
+            return data["response"]
+            
         if agent == "study":
             summary = data.get("summary", "")
-            flashcards = data.get("flashcards", [])
-            mcqs = data.get("mcqs", [])
+            flashcards = data.get("flashcards") or []
+            mcqs = data.get("mcqs") or []
             out = f"📚 SUMMARY:\n{summary}\n\n🏷️ FLASHCARDS:\n"
             for fc in flashcards:
-                out += f"• Q: {fc.get('q')}\n  A: {fc.get('a')}\n"
+                if isinstance(fc, dict):
+                    out += f"• Q: {fc.get('q', '')}\n  A: {fc.get('a', '')}\n"
             out += "\n📝 MCQs:\n"
             for m in mcqs:
-                options_str = ", ".join(m.get("options", []))
-                out += f"• {m.get('q')}\n  Options: {options_str}\n  Answer: {m.get('answer')}\n"
+                if isinstance(m, dict):
+                    opts = m.get("options") or []
+                    options_str = ", ".join(opts) if isinstance(opts, list) else str(opts)
+                    out += f"• {m.get('q', '')}\n  Options: {options_str}\n  Answer: {m.get('answer', '')}\n"
             return out
         elif agent == "planner":
             exam_name = data.get("exam_name", "")
             exam_date = data.get("exam_date", "")
-            schedule = data.get("schedule", [])
-            milestones = data.get("milestones", [])
+            schedule = data.get("schedule") or []
+            milestones = data.get("milestones") or []
             out = f"📅 STUDY SCHEDULE FOR: {exam_name} (Date: {exam_date})\n\n"
             for s in schedule:
-                topics_str = ", ".join(s.get("topics", []))
-                resources_str = ", ".join(s.get("resources", []))
-                out += f"• Day {s.get('day')} ({s.get('date')}):\n  Topics: {topics_str}\n  Hours: {s.get('duration_hours')}h ({s.get('study_load')} load)\n  Resources: {resources_str}\n"
+                if isinstance(s, dict):
+                    topics = s.get("topics") or []
+                    topics_str = ", ".join(topics) if isinstance(topics, list) else str(topics)
+                    resources = s.get("resources") or []
+                    resources_str = ", ".join(resources) if isinstance(resources, list) else str(resources)
+                    out += f"• Day {s.get('day', '')} ({s.get('date', '')}):\n  Topics: {topics_str}\n  Hours: {s.get('duration_hours', '')}h ({s.get('study_load', '')} load)\n  Resources: {resources_str}\n"
             if milestones:
                 out += "\n🎯 MILESTONES:\n"
                 for m in milestones:
-                    out += f"• Day {m.get('day')}: {m.get('milestone')}\n"
+                    if isinstance(m, dict):
+                        out += f"• Day {m.get('day', '')}: {m.get('milestone', '')}\n"
             return out
         elif agent == "expense":
             amount = data.get("amount", 0.0)
@@ -407,7 +477,6 @@ async def get_index():
 </html>"""
 
 
-
 class ConnectionManager:
     def __init__(self):
         self.active_connections: List[WebSocket] = []
@@ -428,22 +497,26 @@ class StudyRequest(BaseModel):
     content: str
     is_image: bool = False
     prompt_text: Optional[str] = None
+    session_id: Optional[str] = None
 
 class PlannerRequest(BaseModel):
-    exam_name: str
-    exam_date: str
-    topics_completed: List[str]
-    syllabus: List[str]
+    exam_name: Optional[str] = ""
+    exam_date: Optional[str] = ""
+    topics_completed: Optional[List[str]] = []
+    syllabus: Optional[List[str]] = []
     content: Optional[str] = None
     is_image: bool = False
+    session_id: Optional[str] = None
 
 class ExpenseRequest(BaseModel):
     image_base64: str
     prompt_text: Optional[str] = None
+    session_id: Optional[str] = None
 
 class ContentRequest(BaseModel):
     task: str
     context: str
+    session_id: Optional[str] = None
 
 @app.post("/api/chat/history")
 async def get_chat_history():
@@ -464,25 +537,27 @@ async def clear_chat_history():
 @app.post("/api/agents/study/process")
 async def process_study(req: StudyRequest):
     try:
-        history = chat_history_db.setdefault("study", [])
-        result = await study_agent.process_material(req.content, req.is_image, req.prompt_text, chat_history=history)
+        session, session_id = get_or_create_session("study", req.session_id)
+        result = await study_agent.process_material(req.content, req.is_image, req.prompt_text, chat_history=session["messages"])
         
         formatted_resp = format_agent_response("study", result)
         user_msg = req.prompt_text if req.prompt_text else ("Attached document/image" if req.is_image or req.content.startswith("JVBERi") else req.content)
-        history.append({
+        
+        user_msg_dict = {
             "sender": "user",
             "text": user_msg,
             "image_base64": req.content if req.is_image else None,
             "is_image": req.is_image
-        })
-        history.append({
+        }
+        agent_msg_dict = {
             "sender": "agent",
             "text": formatted_resp,
             "image_base64": None,
             "is_image": False
-        })
-        chat_history_db["study"] = history[-30:]
-        save_chat_history()
+        }
+        actual_session_id = update_session_title_and_append("study", session_id, user_msg_dict, agent_msg_dict)
+        if isinstance(result, dict):
+            result["session_id"] = actual_session_id
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -490,27 +565,29 @@ async def process_study(req: StudyRequest):
 @app.post("/api/agents/planner/schedule")
 async def process_planner(req: PlannerRequest):
     try:
+        session, session_id = get_or_create_session("planner", req.session_id)
         result = await planner_agent.generate_schedule(
             req.exam_name, req.exam_date, req.topics_completed, req.syllabus,
             content=req.content, is_image=req.is_image
         )
         formatted_resp = format_agent_response("planner", result)
-        history = chat_history_db.setdefault("planner", [])
         user_msg = f"Plan Schedule for {req.exam_name}"
-        history.append({
+        
+        user_msg_dict = {
             "sender": "user",
             "text": user_msg,
             "image_base64": req.content if req.is_image else None,
             "is_image": req.is_image
-        })
-        history.append({
+        }
+        agent_msg_dict = {
             "sender": "agent",
             "text": formatted_resp,
             "image_base64": None,
             "is_image": False
-        })
-        chat_history_db["planner"] = history[-30:]
-        save_chat_history()
+        }
+        actual_session_id = update_session_title_and_append("planner", session_id, user_msg_dict, agent_msg_dict)
+        if isinstance(result, dict):
+            result["session_id"] = actual_session_id
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -518,24 +595,26 @@ async def process_planner(req: PlannerRequest):
 @app.post("/api/agents/expense/process")
 async def process_expense(req: ExpenseRequest):
     try:
+        session, session_id = get_or_create_session("expense", req.session_id)
         result = await expense_agent.process_receipt(req.image_base64, req.prompt_text)
         formatted_resp = format_agent_response("expense", result)
-        history = chat_history_db.setdefault("expense", [])
         user_msg = req.prompt_text if req.prompt_text else "Receipt Upload"
-        history.append({
+        
+        user_msg_dict = {
             "sender": "user",
             "text": user_msg,
             "image_base64": req.image_base64,
             "is_image": True
-        })
-        history.append({
+        }
+        agent_msg_dict = {
             "sender": "agent",
             "text": formatted_resp,
             "image_base64": None,
             "is_image": False
-        })
-        chat_history_db["expense"] = history[-30:]
-        save_chat_history()
+        }
+        actual_session_id = update_session_title_and_append("expense", session_id, user_msg_dict, agent_msg_dict)
+        if isinstance(result, dict):
+            result["session_id"] = actual_session_id
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -543,23 +622,25 @@ async def process_expense(req: ExpenseRequest):
 @app.post("/api/agents/content/draft")
 async def process_content(req: ContentRequest):
     try:
+        session, session_id = get_or_create_session("content", req.session_id)
         result = await content_agent.draft_content(req.task, req.context)
         formatted_resp = format_agent_response("content", result)
-        history = chat_history_db.setdefault("content", [])
-        history.append({
+        
+        user_msg_dict = {
             "sender": "user",
             "text": f"Task: {req.task}\nContext: {req.context}",
             "image_base64": None,
             "is_image": False
-        })
-        history.append({
+        }
+        agent_msg_dict = {
             "sender": "agent",
             "text": formatted_resp,
             "image_base64": None,
             "is_image": False
-        })
-        chat_history_db["content"] = history[-30:]
-        save_chat_history()
+        }
+        actual_session_id = update_session_title_and_append("content", session_id, user_msg_dict, agent_msg_dict)
+        if isinstance(result, dict):
+            result["session_id"] = actual_session_id
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -576,39 +657,43 @@ async def websocket_endpoint(websocket: WebSocket):
             agent = request.get("agent", "")
             action = request.get("action", "")
             payload = request.get("payload", {})
+            session_id = payload.get("session_id") or request.get("session_id")
             
             start_time = time.time()
             result = {}
             status = "success"
+            actual_session_id = None
             
             try:
                 if agent == "study":
-                    is_image = payload.get("is_image", False) or payload.get("file_base64") is not None
+                    is_image = payload.get("is_image", False)
                     content = payload.get("file_base64") or payload.get("content", "")
                     prompt_text = payload.get("prompt_text")
                     
-                    history = chat_history_db.setdefault("study", [])
-                    result = await study_agent.process_material(content, is_image, prompt_text, chat_history=history)
+                    session, session_id = get_or_create_session("study", session_id)
+                    result = await study_agent.process_material(content, is_image, prompt_text, chat_history=session["messages"])
                     
                     formatted_resp = format_agent_response("study", result)
                     user_msg = prompt_text if prompt_text else ("Attached document/image" if is_image or content.startswith("JVBERi") else content)
-                    history.append({
+                    
+                    user_msg_dict = {
                         "sender": "user",
                         "text": user_msg,
                         "image_base64": content if is_image else None,
                         "is_image": is_image
-                    })
-                    history.append({
+                    }
+                    agent_msg_dict = {
                         "sender": "agent",
                         "text": formatted_resp,
                         "image_base64": None,
                         "is_image": False
-                    })
-                    chat_history_db["study"] = history[-30:]
-                    save_chat_history()
+                    }
+                    actual_session_id = update_session_title_and_append("study", session_id, user_msg_dict, agent_msg_dict)
                 elif agent == "planner":
-                    is_image = payload.get("is_image", False) or payload.get("file_base64") is not None
+                    is_image = payload.get("is_image", False)
                     content = payload.get("file_base64") or payload.get("content")
+                    
+                    session, session_id = get_or_create_session("planner", session_id)
                     result = await planner_agent.generate_schedule(
                         payload.get("exam_name", ""),
                         payload.get("exam_date", ""),
@@ -618,69 +703,70 @@ async def websocket_endpoint(websocket: WebSocket):
                         is_image=is_image
                     )
                     formatted_resp = format_agent_response("planner", result)
-                    history = chat_history_db.setdefault("planner", [])
                     user_msg = f"Plan Schedule for {payload.get('exam_name', '')}"
-                    history.append({
+                    
+                    user_msg_dict = {
                         "sender": "user",
                         "text": user_msg,
                         "image_base64": content if is_image else None,
                         "is_image": is_image
-                    })
-                    history.append({
+                    }
+                    agent_msg_dict = {
                         "sender": "agent",
                         "text": formatted_resp,
                         "image_base64": None,
                         "is_image": False
-                    })
-                    chat_history_db["planner"] = history[-30:]
-                    save_chat_history()
+                    }
+                    actual_session_id = update_session_title_and_append("planner", session_id, user_msg_dict, agent_msg_dict)
                 elif agent == "expense":
                     image_base64 = payload.get("image_base64", "")
                     prompt_text = payload.get("prompt_text")
+                    
+                    session, session_id = get_or_create_session("expense", session_id)
                     result = await expense_agent.process_receipt(
                         image_base64,
                         prompt_text
                     )
                     formatted_resp = format_agent_response("expense", result)
-                    history = chat_history_db.setdefault("expense", [])
                     user_msg = prompt_text if prompt_text else "Receipt Upload"
-                    history.append({
+                    
+                    user_msg_dict = {
                         "sender": "user",
                         "text": user_msg,
                         "image_base64": image_base64,
                         "is_image": True
-                    })
-                    history.append({
+                    }
+                    agent_msg_dict = {
                         "sender": "agent",
                         "text": formatted_resp,
                         "image_base64": None,
                         "is_image": False
-                    })
-                    chat_history_db["expense"] = history[-30:]
-                    save_chat_history()
+                    }
+                    actual_session_id = update_session_title_and_append("expense", session_id, user_msg_dict, agent_msg_dict)
                 elif agent == "content":
                     task = payload.get("task", "")
                     context = payload.get("context", "")
+                    
+                    session, session_id = get_or_create_session("content", session_id)
                     result = await content_agent.draft_content(
                         task,
                         context
                     )
                     formatted_resp = format_agent_response("content", result)
-                    history = chat_history_db.setdefault("content", [])
-                    history.append({
+                    
+                    user_msg_dict = {
                         "sender": "user",
                         "text": f"Task: {task}\nContext: {context}",
                         "image_base64": None,
                         "is_image": False
-                    })
-                    history.append({
+                    }
+                    agent_msg_dict = {
                         "sender": "agent",
                         "text": formatted_resp,
                         "image_base64": None,
                         "is_image": False
-                    })
-                    chat_history_db["content"] = history[-30:]
-                    save_chat_history()
+                    }
+                    actual_session_id = update_session_title_and_append("content", session_id, user_msg_dict, agent_msg_dict)
                 else:
                     status = "error"
                     result = {"detail": f"Unknown agent: {agent}"}
@@ -693,6 +779,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 "status": status,
                 "agent": agent,
                 "data": result,
+                "session_id": actual_session_id,
                 "processing_time_ms": int((time.time() - start_time) * 1000),
                 "server_timestamp": int(time.time())
             }

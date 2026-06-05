@@ -28,10 +28,10 @@ class PlannerAgent:
                 extracted_syllabus = content
 
         system_prompt = (
-            "You are a professional Academic Planner. Output your response as a valid JSON object only.\n"
-            "You must follow these safety guardrails strictly:\n"
+            "You are a professional Academic Planner. You must follow these safety guardrails strictly:\n"
             "- Only answer educational, academic, or study-related planning queries.\n"
-            "- Do not process any inappropriate, sexual, adult, adulterous, violent, or unsafe content."
+            "- Do not process any inappropriate, sexual, adult, adulterous, violent, or unsafe content.\n"
+            "Respond freely in clear, structured markdown. Do not restrict your output format to JSON. Present a detailed study schedule and milestones for the user."
         )
 
         syllabus_context = json.dumps(syllabus)
@@ -41,34 +41,8 @@ class PlannerAgent:
         prompt = (
             f"Generate a daily study plan for the exam '{exam_name or 'Upcoming Exam'}' on {exam_date or 'TBD'}.\n"
             f"Syllabus Context: {syllabus_context}\n"
-            f"Completed Topics: {json.dumps(topics_completed)}\n\n"
-            "Format the output strictly as a JSON object with this structure:\n"
-            "{\n"
-            '  "exam_name": "name",\n'
-            '  "exam_date": "date",\n'
-            '  "schedule": [\n'
-            "    {\n"
-            '      "day": 1,\n'
-            '      "date": "YYYY-MM-DD",\n'
-            '      "topics": ["topic1", "topic2"],\n'
-            '      "duration_hours": 2,\n'
-            '      "study_load": "medium",\n'
-            '      "resources": ["resource1"]\n'
-            "    }\n"
-            "  ],\n"
-            '  "milestones": [{"day": 3, "milestone": "milestone description"}]\n'
-            "}"
+            f"Completed Topics: {json.dumps(topics_completed)}\n"
         )
         
         response_text = await self.llm.query_llm(prompt, system_prompt=system_prompt)
-        try:
-            return json.loads(response_text)
-        except json.JSONDecodeError:
-            try:
-                start = response_text.find("{")
-                end = response_text.rfind("}") + 1
-                if start != -1 and end != -1:
-                    return json.loads(response_text[start:end])
-            except Exception:
-                pass
-            return {"exam_name": exam_name or "Upcoming Exam", "exam_date": exam_date or "TBD", "schedule": [], "milestones": []}
+        return {"response": response_text, "exam_name": exam_name or "Upcoming Exam", "exam_date": exam_date or "TBD", "schedule": [], "milestones": []}

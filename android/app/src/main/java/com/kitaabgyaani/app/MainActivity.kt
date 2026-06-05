@@ -52,6 +52,9 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.util.*
+import androidx.core.content.FileProvider
+import java.io.File
+import kotlinx.coroutines.delay
 
 class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
 
@@ -101,30 +104,120 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         val isSystem: Boolean = false
     )
 
+    data class ChatSession(
+        val id: String,
+        val title: String,
+        val messages: List<ChatMessage>
+    )
+
     @OptIn(ExperimentalMaterial3Api::class)
     @Composable
     fun ChatAppScreen() {
         val context = LocalContext.current
-        var serverIp by remember { mutableStateOf("10.0.2.2") }
+        val sharedPrefs = remember { context.getSharedPreferences("KitaabGyaaniPrefs", Context.MODE_PRIVATE) }
+        var serverIp by remember { mutableStateOf(sharedPrefs.getString("server_ip", "10.0.2.2") ?: "10.0.2.2") }
+        var showSettingsDialog by remember { mutableStateOf(false) }
         var isConnected by remember { mutableStateOf(false) }
         var currentAgent by remember { mutableStateOf("study") }
         var inputText by remember { mutableStateOf("") }
-        var selectedImageBitmap by remember { mutableStateOf<Bitmap?>(null) }
         var selectedFileBase64 by remember { mutableStateOf<String?>(null) }
         var selectedFileIsImage by remember { mutableStateOf(false) }
         var selectedFileName by remember { mutableStateOf<String?>(null) }
+        var selectedImageBitmap by remember { mutableStateOf<Bitmap?>(null) }
+        var cameraPhotoUri by remember { mutableStateOf<Uri?>(null) }
 
-        val chatHistories = remember {
-            mutableStateMapOf<String, List<ChatMessage>>().apply {
-                put("study", listOf(ChatMessage(sender = "agent", text = "Hello! Send me notes, or take a picture of study material to extract flashcards and summary.")))
-                put("planner", listOf(ChatMessage(sender = "agent", text = "Hello! Send me your exam syllabus topics and target date to generate a study plan.")))
-                put("expense", listOf(ChatMessage(sender = "agent", text = "Hello! Take a photo of a receipt to parse amount, category, and merchant details.")))
-                put("content", listOf(ChatMessage(sender = "agent", text = "Hello! Describe the writing task and context to draft a professional copy.")))
+        val chatSessions = remember {
+            mutableStateMapOf<String, List<ChatSession>>().apply {
+                put("study", emptyList())
+                put("planner", emptyList())
+                put("expense", emptyList())
+                put("content", emptyList())
             }
         }
 
-        val currentHistory = chatHistories[currentAgent] ?: emptyList()
+        val currentSessionIds = remember {
+            mutableStateMapOf<String, String?>().apply {
+                put("study", null)
+                put("planner", null)
+                put("expense", null)
+                put("content", null)
+            }
+        }
+
+        val currentSessionId = currentSessionIds[currentAgent]
+        val currentHistory = chatSessions[currentAgent]?.find { it.id == currentSessionId }?.messages ?: listOf(
+            ChatMessage(
+                sender = "agent",
+                text = when (currentAgent) {
+                    "study" -> "Hello! Send me notes, or take a picture of study material to extract flashcards and summary."
+                    "planner" -> "Hello! Send me your exam syllabus topics and target date to generate a study plan."
+                    "expense" -> "Hello! Take a photo of a receipt to parse amount, category, and merchant details."
+                    "content" -> "Hello! Describe the writing task and context to draft a professional copy."
+                    else -> "Hello! How can I help you today?"
+                }
+            )
+        )
         val listState = rememberLazyListState()
+
+        fun parseHistoryJson(res: String) {
+            try {
+                val type = object : com.google.gson.reflect.TypeToken<Map<String, List<Map<String, Any?>>>>() {}.type
+                val rawMap = gson.fromJson<Map<String, List<Map<String, Any?>>>>(res, type) ?: return
+                
+                rawMap.forEach { (agent, rawSessions) ->
+                    val sessionsList = rawSessions.mapNotNull { rawSession ->
+                        val id = rawSession["id"] as? String ?: return@mapNotNull null
+                        val title = rawSession["title"] as? String ?: "Chat"
+                        val rawMessages = rawSession["messages"] as? List<Map<String, Any?>> ?: emptyList()
+                        
+                        val messagesList = rawMessages.mapNotNull { msg ->
+                            val sender = msg["sender"] as? String ?: return@mapNotNull null
+                            val text = msg["text"] as? String ?: ""
+                            val isImage = msg["is_image"] as? Boolean ?: false
+                            val imgBase64 = msg["image_base64"] as? String
+
+                            val bitmap = if (isImage && !imgBase64.isNullOrEmpty()) {
+                                try {
+                                    val decodedBytes = android.util.Base64.decode(imgBase64, android.util.Base64.DEFAULT)
+                                    BitmapFactory.decodeByteArray(decodedBytes, 0, decodedBytes.size)
+                                } catch (e: Exception) {
+                                    null
+                                }
+                            } else {
+                                null
+                            }
+                            ChatMessage(sender = sender, text = text, bitmap = bitmap)
+                        }
+                        ChatSession(id = id, title = title, messages = messagesList)
+                    }
+                    chatSessions[agent] = sessionsList
+                    
+                    val currentId = currentSessionIds[agent]
+                    val hasCurrent = sessionsList.any { it.id == currentId }
+                    if (!hasCurrent && sessionsList.isNotEmpty()) {
+                        currentSessionIds[agent] = sessionsList.last().id
+                    }
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+
+        fun fetchHistory(ip: String) {
+            val ipPattern = Regex("""^\d{1,3}(\.\d{1,3}){3}$""")
+            if (ipPattern.matches(ip)) {
+                makeHttpRequest(
+                    url = "http://$ip:8000/api/chat/history",
+                    bodyJson = "{}",
+                    onSuccess = { res ->
+                        runOnUiThread {
+                            parseHistoryJson(res)
+                        }
+                    },
+                    onError = { _ -> }
+                )
+            }
+        }
 
         val webSocketListener = remember {
             object : WebSocketClient.WebSocketListenerInterface {
@@ -141,17 +234,16 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                 override fun onMessageReceived(text: String) {
                     runOnUiThread {
                         try {
-                            val wsResponse = gson.fromJson(text, WebSocketResponse::class.java)
-                            val agentName = wsResponse.agent
-                            val dataVal = wsResponse.data
-                            val responseString = gson.toJson(dataVal)
-                            val formattedText = formatAgentResponse(agentName, responseString)
-                            
-                            val history = chatHistories[agentName] ?: emptyList()
-                            chatHistories[agentName] = history + ChatMessage(sender = "agent", text = formattedText)
+                            val wsResponseMap = gson.fromJson<Map<String, Any?>>(text, object : com.google.gson.reflect.TypeToken<Map<String, Any?>>() {}.type)
+                            val agentName = (wsResponseMap["agent"] as? String) ?: currentAgent
+                            val newSessionId = wsResponseMap["session_id"] as? String
+                            if (newSessionId != null) {
+                                currentSessionIds[agentName] = newSessionId
+                            }
+                            fetchHistory(serverIp)
                         } catch (e: Exception) {
-                            val history = chatHistories[currentAgent] ?: emptyList()
-                            chatHistories[currentAgent] = history + ChatMessage(sender = "agent", text = text)
+                            e.printStackTrace()
+                            fetchHistory(serverIp)
                         }
                     }
                 }
@@ -164,59 +256,18 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         }
 
         LaunchedEffect(serverIp) {
-            webSocketClient?.disconnect()
-            webSocketClient = WebSocketClient(webSocketListener)
-            try {
-                webSocketClient?.connect("ws://$serverIp:8000/ws")
-            } catch (e: Exception) {
-                isConnected = false
-            }
-
-            // Only fetch history when IP looks like a complete address (avoids crash during typing)
-            val ipPattern = Regex("""^\d{1,3}(\.\d{1,3}){3}$""")
-            if (ipPattern.matches(serverIp)) {
-                makeHttpRequest(
-                    url = "http://$serverIp:8000/api/chat/history",
-                    bodyJson = "{}",
-                    onSuccess = { res ->
-                        runOnUiThread {
-                            try {
-                                val type = object : com.google.gson.reflect.TypeToken<Map<String, List<Map<String, Any?>>>>() {}.type
-                                val historyMap = gson.fromJson<Map<String, List<Map<String, Any?>>>>(res, type)
-                                if (historyMap != null) {
-                                    historyMap.forEach { (agent, messages) ->
-                                        val list = messages.mapNotNull { msg ->
-                                            val sender = msg["sender"] as? String ?: return@mapNotNull null
-                                            val text = msg["text"] as? String ?: ""
-                                            val isImage = msg["is_image"] as? Boolean ?: false
-                                            val imgBase64 = msg["image_base64"] as? String
-
-                                            val bitmap = if (isImage && !imgBase64.isNullOrEmpty()) {
-                                                try {
-                                                    val decodedBytes = android.util.Base64.decode(imgBase64, android.util.Base64.DEFAULT)
-                                                    BitmapFactory.decodeByteArray(decodedBytes, 0, decodedBytes.size)
-                                                } catch (e: Exception) {
-                                                    null
-                                                }
-                                            } else {
-                                                null
-                                            }
-                                            ChatMessage(sender = sender, text = text, bitmap = bitmap)
-                                        }
-                                        if (list.isNotEmpty()) {
-                                            chatHistories[agent] = list
-                                        }
-                                    }
-                                }
-                            } catch (e: Exception) {
-                                e.printStackTrace()
-                            }
-                        }
-                    },
-                    onError = { _ ->
-                        // Silently fail — history is not critical for app launch
+            while (true) {
+                if (!isConnected) {
+                    webSocketClient?.disconnect()
+                    webSocketClient = WebSocketClient(webSocketListener)
+                    try {
+                        webSocketClient?.connect("ws://$serverIp:8000/ws")
+                    } catch (e: Exception) {
+                        isConnected = false
                     }
-                )
+                    fetchHistory(serverIp)
+                }
+                delay(5000)
             }
         }
 
@@ -237,13 +288,38 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         }
 
         val cameraLauncher = rememberLauncherForActivityResult(
-            contract = ActivityResultContracts.TakePicturePreview()
-        ) { bitmap: Bitmap? ->
-            bitmap?.let { capturedBitmap ->
-                selectedImageBitmap = capturedBitmap
-                selectedFileBase64 = bitmapToBase64(capturedBitmap)
-                selectedFileIsImage = true
-                selectedFileName = "camera_capture.jpg"
+            contract = ActivityResultContracts.TakePicture()
+        ) { _ ->
+            cameraPhotoUri?.let { uri ->
+                try {
+                    val inputStream = context.contentResolver.openInputStream(uri)
+                    val capturedBitmap = BitmapFactory.decodeStream(inputStream)
+                    inputStream?.close()
+                    if (capturedBitmap != null) {
+                        selectedImageBitmap = capturedBitmap
+                        selectedFileBase64 = bitmapToBase64(capturedBitmap)
+                        selectedFileIsImage = true
+                        selectedFileName = "camera_capture.jpg"
+                    }
+                } catch (e: Exception) {
+                    Toast.makeText(context, "Failed to load captured image", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+
+        fun launchCamera() {
+            try {
+                val storageDir = context.externalCacheDir ?: context.cacheDir
+                val tempFile = File.createTempFile("camera_photo_", ".jpg", storageDir)
+                val uri = FileProvider.getUriForFile(
+                    context,
+                    "com.kitaabgyaani.app.fileprovider",
+                    tempFile
+                )
+                cameraPhotoUri = uri
+                cameraLauncher.launch(uri)
+            } catch (e: Exception) {
+                Toast.makeText(context, "Failed to create temp file: ${e.message}", Toast.LENGTH_SHORT).show()
             }
         }
 
@@ -251,11 +327,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             contract = ActivityResultContracts.RequestPermission()
         ) { isGranted ->
             if (isGranted) {
-                try {
-                    cameraLauncher.launch(null)
-                } catch (e: Exception) {
-                    Toast.makeText(context, "Error: ${e.message}", Toast.LENGTH_SHORT).show()
-                }
+                launchCamera()
             } else {
                 Toast.makeText(context, "Camera permission denied", Toast.LENGTH_SHORT).show()
             }
@@ -283,260 +355,419 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             }
         }
 
-        Scaffold(
-            topBar = {
-                TopAppBar(
-                    title = {
-                        Column {
-                            Text("KitaabGyaani Chat", fontWeight = FontWeight.Bold, color = TextLight, fontSize = 18.sp)
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(6.dp)
-                                        .clip(RoundedCornerShape(3.dp))
-                                        .background(if (isConnected) AccentEmerald else Color.Red)
-                                )
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text(
-                                    if (isConnected) "Connected to server" else "Offline mode",
-                                    fontSize = 11.sp,
-                                    color = if (isConnected) AccentEmerald else TextMuted
-                                )
-                            }
-                        }
-                    },
-                    colors = TopAppBarDefaults.topAppBarColors(containerColor = DarkSurface),
-                    actions = {
-                        IconButton(onClick = { filePickerLauncher.launch("*/*") }) {
-                            Icon(Icons.Default.Share, contentDescription = "Upload Document", tint = TextLight)
-                        }
-                    }
-                )
-            },
-            bottomBar = {
-                Column(
-                    modifier = Modifier
-                        .background(DarkSurface)
-                        .padding(horizontal = 8.dp, vertical = 8.dp)
-                        .navigationBarsPadding()
-                        .imePadding()
+        val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
+        val scope = rememberCoroutineScope()
+
+        ModalNavigationDrawer(
+            drawerState = drawerState,
+            drawerContent = {
+                ModalDrawerSheet(
+                    drawerContainerColor = DarkSurface,
+                    modifier = Modifier.width(280.dp)
                 ) {
-                    if (selectedFileBase64 != null) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(bottom = 8.dp)
-                                .background(DarkBackground, shape = RoundedCornerShape(12.dp))
-                                .padding(8.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            if (selectedImageBitmap != null) {
-                                androidx.compose.foundation.Image(
-                                    bitmap = selectedImageBitmap!!.asImageBitmap(),
-                                    contentDescription = "Attachment Preview",
-                                    modifier = Modifier
-                                        .size(48.dp)
-                                        .clip(RoundedCornerShape(8.dp))
-                                )
-                            } else {
-                                Box(
-                                    modifier = Modifier
-                                        .size(48.dp)
-                                        .background(PrimaryIndigo, shape = RoundedCornerShape(8.dp)),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Icon(Icons.Default.Share, contentDescription = "File", tint = Color.White)
-                                }
-                            }
-
-                            Spacer(modifier = Modifier.width(12.dp))
-
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = selectedFileName ?: "Attached File",
-                                    color = TextLight,
-                                    fontSize = 13.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
-                                Text(
-                                    text = if (selectedFileIsImage) "Ready to analyze image" else "Ready to analyze document",
-                                    color = TextMuted,
-                                    fontSize = 11.sp
-                                )
-                            }
-
-                            IconButton(onClick = {
-                                selectedFileBase64 = null
-                                selectedImageBitmap = null
-                                selectedFileName = null
-                            }) {
-                                Icon(Icons.Default.Close, contentDescription = "Clear Attachment", tint = Color.Red)
-                            }
-                        }
-                    }
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(16.dp)
                     ) {
-                        IconButton(
-                            onClick = {
-                                val hasPermission = androidx.core.content.ContextCompat.checkSelfPermission(
-                                    context, android.Manifest.permission.CAMERA
-                                ) == android.content.pm.PackageManager.PERMISSION_GRANTED
-                                if (hasPermission) {
-                                    try {
-                                        cameraLauncher.launch(null)
-                                    } catch (e: Exception) {
-                                        Toast.makeText(context, "Error: ${e.message}", Toast.LENGTH_SHORT).show()
-                                    }
-                                } else {
-                                    cameraPermissionLauncher.launch(android.Manifest.permission.CAMERA)
-                                }
-                            },
-                            colors = IconButtonDefaults.iconButtonColors(containerColor = DarkBackground)
-                        ) {
-                            Icon(Icons.Default.Add, contentDescription = "Camera", tint = SecondaryCyan)
-                        }
-
-                        IconButton(
-                            onClick = {
-                                val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                                    putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                                    putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
-                                }
-                                speechLauncher.launch(intent)
-                            },
-                            colors = IconButtonDefaults.iconButtonColors(containerColor = DarkBackground)
-                        ) {
-                            Icon(Icons.Default.PlayArrow, contentDescription = "Voice", tint = SecondaryCyan)
-                        }
-
-                        OutlinedTextField(
-                            value = inputText,
-                            onValueChange = { inputText = it },
-                            placeholder = { Text("Ask anything to ${currentAgent}...", color = TextMuted) },
-                            maxLines = 3,
-                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                            keyboardActions = KeyboardActions(onSend = {
-                                if (inputText.isNotEmpty() || selectedFileBase64 != null) {
-                                    sendMessage(
-                                        text = inputText,
-                                        agent = currentAgent,
-                                        isConnected = isConnected,
-                                        serverIp = serverIp,
-                                        chatHistories = chatHistories,
-                                        fileBase64 = selectedFileBase64,
-                                        isImage = selectedFileIsImage,
-                                        imageBitmap = selectedImageBitmap,
-                                        onClearAttachment = {
-                                            selectedFileBase64 = null
-                                            selectedImageBitmap = null
-                                            selectedFileName = null
-                                        }
-                                    )
-                                    inputText = ""
-                                }
-                            }),
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedTextColor = TextLight,
-                                unfocusedTextColor = TextLight,
-                                focusedBorderColor = PrimaryIndigo,
-                                unfocusedBorderColor = DarkBackground
-                            ),
-                            modifier = Modifier.weight(1f)
+                        Text(
+                            text = "KitaabGyaani Chat",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 20.sp,
+                            color = TextLight,
+                            modifier = Modifier.padding(bottom = 16.dp)
                         )
-
-                        IconButton(
+                        
+                        Button(
                             onClick = {
-                                if (inputText.isNotEmpty() || selectedFileBase64 != null) {
-                                    sendMessage(
-                                        text = inputText,
-                                        agent = currentAgent,
-                                        isConnected = isConnected,
-                                        serverIp = serverIp,
-                                        chatHistories = chatHistories,
-                                        fileBase64 = selectedFileBase64,
-                                        isImage = selectedFileIsImage,
-                                        imageBitmap = selectedImageBitmap,
-                                        onClearAttachment = {
-                                            selectedFileBase64 = null
-                                            selectedImageBitmap = null
-                                            selectedFileName = null
-                                        }
-                                    )
-                                    inputText = ""
-                                }
+                                currentSessionIds[currentAgent] = null
+                                scope.launch { drawerState.close() }
                             },
-                            colors = IconButtonDefaults.iconButtonColors(containerColor = PrimaryIndigo)
+                            colors = ButtonDefaults.buttonColors(containerColor = PrimaryIndigo),
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp)
                         ) {
-                            Icon(Icons.Default.Send, contentDescription = "Send", tint = Color.White)
+                            Icon(Icons.Default.Add, contentDescription = "New Chat", tint = Color.White)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("New Chat", color = Color.White, fontWeight = FontWeight.Bold)
+                        }
+                        
+                        Spacer(modifier = Modifier.height(24.dp))
+                        
+                        Text(
+                            text = "Previous Chats",
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 14.sp,
+                            color = TextMuted,
+                            modifier = Modifier.padding(bottom = 8.dp)
+                        )
+                        
+                        val sessions = chatSessions[currentAgent] ?: emptyList()
+                        if (sessions.isEmpty()) {
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .fillMaxWidth(),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text("No previous chats", color = TextMuted, fontSize = 13.sp)
+                            }
+                        } else {
+                            LazyColumn(
+                                modifier = Modifier.weight(1f),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                items(sessions.reversed()) { session ->
+                                    val isSelected = currentSessionId == session.id
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(if (isSelected) PrimaryIndigo.copy(alpha = 0.2f) else Color.Transparent)
+                                            .clickable {
+                                                currentSessionIds[currentAgent] = session.id
+                                                scope.launch { drawerState.close() }
+                                            }
+                                            .padding(horizontal = 12.dp, vertical = 10.dp)
+                                    ) {
+                                        Text(
+                                            text = session.title,
+                                            color = if (isSelected) TextLight else TextMuted,
+                                            fontSize = 14.sp,
+                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                            maxLines = 1
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                        
+                        Spacer(modifier = Modifier.height(16.dp))
+                        
+                        Button(
+                            onClick = {
+                                makeHttpRequest(
+                                    url = "http://$serverIp:8000/api/chat/clear",
+                                    bodyJson = "{}",
+                                    onSuccess = {
+                                        runOnUiThread {
+                                            chatSessions.clear()
+                                            currentSessionIds[currentAgent] = null
+                                            fetchHistory(serverIp)
+                                            Toast.makeText(context, "History cleared", Toast.LENGTH_SHORT).show()
+                                        }
+                                    },
+                                    onError = { err ->
+                                        runOnUiThread {
+                                            Toast.makeText(context, "Error: $err", Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                                )
+                                scope.launch { drawerState.close() }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color.Transparent),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(Icons.Default.Delete, contentDescription = "Clear History", tint = Color.Red)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Clear All Chats", color = Color.Red, fontWeight = FontWeight.Bold)
                         }
                     }
                 }
             }
-        ) { paddingValues ->
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(paddingValues)
-                    .background(DarkBackground)
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(DarkSurface)
-                        .padding(vertical = 8.dp),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally)
-                ) {
-                    val agents = listOf("study", "planner", "expense", "content")
-                    agents.forEach { agent ->
-                        Box(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(16.dp))
-                                .background(if (currentAgent == agent) PrimaryIndigo else DarkBackground)
-                                .clickable { currentAgent = agent }
-                                .padding(horizontal = 14.dp, vertical = 6.dp)
+        ) {
+            Scaffold(
+                topBar = {
+                    TopAppBar(
+                        navigationIcon = {
+                            IconButton(onClick = { scope.launch { drawerState.open() } }) {
+                                Icon(Icons.Default.Menu, contentDescription = "Open Side Drawer", tint = TextLight)
+                            }
+                        },
+                        title = {
+                            Column {
+                                Text("KitaabGyaani Chat", fontWeight = FontWeight.Bold, color = TextLight, fontSize = 18.sp)
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(6.dp)
+                                            .clip(RoundedCornerShape(3.dp))
+                                            .background(if (isConnected) AccentEmerald else Color.Red)
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(
+                                        if (isConnected) "Connected to server" else "Offline mode",
+                                        fontSize = 11.sp,
+                                        color = if (isConnected) AccentEmerald else TextMuted
+                                    )
+                                }
+                            }
+                        },
+                        colors = TopAppBarDefaults.topAppBarColors(containerColor = DarkSurface),
+                        actions = {
+                            IconButton(onClick = { filePickerLauncher.launch("*/*") }) {
+                                Icon(Icons.Default.AttachFile, contentDescription = "Upload Document", tint = TextLight)
+                            }
+                            IconButton(onClick = { showSettingsDialog = true }) {
+                                Icon(Icons.Default.Settings, contentDescription = "Settings", tint = TextLight)
+                            }
+                        }
+                    )
+
+                    if (showSettingsDialog) {
+                        AlertDialog(
+                            onDismissRequest = { showSettingsDialog = false },
+                            title = { Text("Settings", color = TextLight, fontWeight = FontWeight.Bold) },
+                            text = {
+                                Column {
+                                    Text("Configure Backend Server IP", color = TextMuted, fontSize = 12.sp)
+                                    Spacer(modifier = Modifier.height(12.dp))
+                                    OutlinedTextField(
+                                        value = serverIp,
+                                        onValueChange = { 
+                                            serverIp = it 
+                                            sharedPrefs.edit().putString("server_ip", it).apply()
+                                        },
+                                        label = { Text("Server IP", color = TextMuted) },
+                                        colors = OutlinedTextFieldDefaults.colors(
+                                            focusedTextColor = TextLight,
+                                            unfocusedTextColor = TextLight,
+                                            focusedBorderColor = PrimaryIndigo,
+                                            unfocusedBorderColor = DarkSurface
+                                        ),
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                }
+                            },
+                            confirmButton = {
+                                TextButton(onClick = { showSettingsDialog = false }) {
+                                    Text("Done", color = PrimaryIndigo, fontWeight = FontWeight.Bold)
+                                }
+                            },
+                            containerColor = DarkSurface
+                        )
+                    }
+                },
+                bottomBar = {
+                    Column(
+                        modifier = Modifier
+                            .background(DarkSurface)
+                            .padding(horizontal = 8.dp, vertical = 8.dp)
+                            .navigationBarsPadding()
+                            .imePadding()
+                    ) {
+                        if (selectedFileBase64 != null) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(bottom = 8.dp)
+                                    .background(DarkBackground, shape = RoundedCornerShape(12.dp))
+                                    .padding(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                if (selectedImageBitmap != null) {
+                                    androidx.compose.foundation.Image(
+                                        bitmap = selectedImageBitmap!!.asImageBitmap(),
+                                        contentDescription = "Attachment Preview",
+                                        modifier = Modifier
+                                            .size(48.dp)
+                                            .clip(RoundedCornerShape(8.dp))
+                                    )
+                                } else {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(48.dp)
+                                            .background(PrimaryIndigo, shape = RoundedCornerShape(8.dp)),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = if (selectedFileName?.endsWith(".pdf", ignoreCase = true) == true) Icons.Default.Description else Icons.Default.Share,
+                                            contentDescription = "File Icon",
+                                            tint = Color.White
+                                        )
+                                    }
+                                }
+
+                                Spacer(modifier = Modifier.width(12.dp))
+
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = selectedFileName ?: "Attached File",
+                                        color = TextLight,
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Text(
+                                        text = if (selectedFileIsImage) "Ready to analyze image" else "Ready to analyze document",
+                                        color = TextMuted,
+                                        fontSize = 11.sp
+                                    )
+                                }
+
+                                IconButton(onClick = {
+                                    selectedFileBase64 = null
+                                    selectedImageBitmap = null
+                                    selectedFileName = null
+                                }) {
+                                    Icon(Icons.Default.Close, contentDescription = "Clear Attachment", tint = Color.Red)
+                                }
+                            }
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text(
-                                text = agent.replaceFirstChar { it.uppercase() },
-                                color = if (currentAgent == agent) Color.White else TextMuted,
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Bold
+                            IconButton(
+                                onClick = {
+                                    val hasPermission = androidx.core.content.ContextCompat.checkSelfPermission(
+                                        context, android.Manifest.permission.CAMERA
+                                    ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                                    if (hasPermission) {
+                                        launchCamera()
+                                    } else {
+                                        cameraPermissionLauncher.launch(android.Manifest.permission.CAMERA)
+                                    }
+                                },
+                                colors = IconButtonDefaults.iconButtonColors(containerColor = DarkBackground)
+                            ) {
+                                Icon(Icons.Default.Add, contentDescription = "Camera", tint = SecondaryCyan)
+                            }
+
+                            IconButton(
+                                onClick = {
+                                    val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                                        putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                                        putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
+                                    }
+                                    speechLauncher.launch(intent)
+                                },
+                                colors = IconButtonDefaults.iconButtonColors(containerColor = DarkBackground)
+                            ) {
+                                Icon(Icons.Default.Mic, contentDescription = "Voice Input", tint = SecondaryCyan)
+                            }
+
+                            OutlinedTextField(
+                                value = inputText,
+                                onValueChange = { inputText = it },
+                                placeholder = { Text("Ask anything to ${currentAgent}...", color = TextMuted) },
+                                maxLines = 3,
+                                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                                keyboardActions = KeyboardActions(onSend = {
+                                    if (inputText.isNotEmpty() || selectedFileBase64 != null) {
+                                        sendMessage(
+                                            text = inputText,
+                                            agent = currentAgent,
+                                            isConnected = isConnected,
+                                            serverIp = serverIp,
+                                            chatSessions = chatSessions,
+                                            currentSessionIds = currentSessionIds,
+                                            fileBase64 = selectedFileBase64,
+                                            isImage = selectedFileIsImage,
+                                            imageBitmap = selectedImageBitmap,
+                                            onClearAttachment = {
+                                                selectedFileBase64 = null
+                                                selectedImageBitmap = null
+                                                selectedFileName = null
+                                            },
+                                            onResponseReceived = {
+                                                fetchHistory(serverIp)
+                                            }
+                                        )
+                                        inputText = ""
+                                    }
+                                }),
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedTextColor = TextLight,
+                                    unfocusedTextColor = TextLight,
+                                    focusedBorderColor = PrimaryIndigo,
+                                    unfocusedBorderColor = DarkBackground
+                                ),
+                                modifier = Modifier.weight(1f)
                             )
+
+                            IconButton(
+                                onClick = {
+                                    if (inputText.isNotEmpty() || selectedFileBase64 != null) {
+                                        sendMessage(
+                                            text = inputText,
+                                            agent = currentAgent,
+                                            isConnected = isConnected,
+                                            serverIp = serverIp,
+                                            chatSessions = chatSessions,
+                                            currentSessionIds = currentSessionIds,
+                                            fileBase64 = selectedFileBase64,
+                                            isImage = selectedFileIsImage,
+                                            imageBitmap = selectedImageBitmap,
+                                            onClearAttachment = {
+                                                selectedFileBase64 = null
+                                                selectedImageBitmap = null
+                                                selectedFileName = null
+                                            },
+                                            onResponseReceived = {
+                                                fetchHistory(serverIp)
+                                            }
+                                        )
+                                        inputText = ""
+                                    }
+                                },
+                                colors = IconButtonDefaults.iconButtonColors(containerColor = PrimaryIndigo)
+                            ) {
+                                Icon(Icons.Default.Send, contentDescription = "Send", tint = Color.White)
+                            }
                         }
                     }
                 }
-
-                Box(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
-                    OutlinedTextField(
-                        value = serverIp,
-                        onValueChange = { serverIp = it },
-                        label = { Text("Server IP", color = TextMuted) },
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = TextLight,
-                            unfocusedTextColor = TextLight,
-                            focusedBorderColor = PrimaryIndigo,
-                            unfocusedBorderColor = DarkSurface
-                        ),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-
-                LazyColumn(
-                    state = listState,
+            ) { paddingValues ->
+                Column(
                     modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
-                    contentPadding = PaddingValues(vertical = 12.dp)
+                        .fillMaxSize()
+                        .padding(paddingValues)
+                        .background(DarkBackground)
                 ) {
-                    items(currentHistory) { message ->
-                        ChatBubble(message = message, onPlayTTS = { speak(message.text) })
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(DarkSurface)
+                            .padding(vertical = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally)
+                    ) {
+                        val agents = listOf("study", "planner", "expense", "content")
+                        agents.forEach { agent ->
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(16.dp))
+                                    .background(if (currentAgent == agent) PrimaryIndigo else DarkBackground)
+                                    .clickable { currentAgent = agent }
+                                    .padding(horizontal = 14.dp, vertical = 6.dp)
+                            ) {
+                                Text(
+                                    text = agent.replaceFirstChar { it.uppercase() },
+                                    color = if (currentAgent == agent) Color.White else TextMuted,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
+
+
+
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                        contentPadding = PaddingValues(vertical = 12.dp)
+                    ) {
+                        items(currentHistory) { message ->
+                            ChatBubble(message = message, onPlayTTS = { speak(message.text) })
+                        }
                     }
                 }
             }
@@ -605,20 +836,39 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         agent: String,
         isConnected: Boolean,
         serverIp: String,
-        chatHistories: MutableMap<String, List<ChatMessage>>,
+        chatSessions: MutableMap<String, List<ChatSession>>,
+        currentSessionIds: MutableMap<String, String?>,
         fileBase64: String? = null,
         isImage: Boolean = false,
         imageBitmap: Bitmap? = null,
-        onClearAttachment: () -> Unit = {}
+        onClearAttachment: () -> Unit = {},
+        onResponseReceived: () -> Unit = {}
     ) {
-        val currentList = chatHistories[agent] ?: emptyList()
+        val currentId = currentSessionIds[agent]
         val userMsgText = if (text.isNotEmpty()) text else if (fileBase64 != null) "Attached document for analysis" else ""
         if (userMsgText.isEmpty() && fileBase64 == null) return
 
-        chatHistories[agent] = currentList + ChatMessage(sender = "user", text = userMsgText, bitmap = imageBitmap)
+        val localUserMsg = ChatMessage(sender = "user", text = userMsgText, bitmap = imageBitmap)
+        
+        val sessionsList = chatSessions[agent] ?: emptyList()
+        val activeSession = sessionsList.find { it.id == currentId }
+        if (activeSession != null) {
+            val updatedMessages = activeSession.messages + localUserMsg
+            val updatedSession = activeSession.copy(messages = updatedMessages)
+            chatSessions[agent] = sessionsList.map { if (it.id == activeSession.id) updatedSession else it }
+        } else {
+            val tempSessionId = "temp_${UUID.randomUUID()}"
+            val tempSession = ChatSession(
+                id = tempSessionId,
+                title = if (userMsgText.length > 25) userMsgText.substring(0, 25) + "..." else userMsgText,
+                messages = listOf(localUserMsg)
+            )
+            chatSessions[agent] = sessionsList + tempSession
+            currentSessionIds[agent] = tempSessionId
+        }
 
         if (isConnected) {
-            val payload = if (fileBase64 != null) {
+            val payload = (if (fileBase64 != null) {
                 if (agent == "expense") {
                     mapOf("image_base64" to fileBase64, "prompt_text" to text)
                 } else {
@@ -639,7 +889,10 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                     "content" -> mapOf("task" to text, "context" to "No context provided")
                     else -> mapOf("content" to text)
                 }
-            }
+            }).toMutableMap()
+
+            val sessionToSend = if (currentId != null && !currentId.startsWith("temp_")) currentId else null
+            sessionToSend?.let { payload["session_id"] = it }
 
             webSocketClient?.send(
                 WebSocketRequest(
@@ -659,22 +912,15 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                 )
             )
         } else {
-            val url = if (fileBase64 != null) {
-                if (agent == "expense") {
-                    "http://$serverIp:8000/api/agents/expense/process"
-                } else {
-                    "http://$serverIp:8000/api/agents/study/process"
-                }
-            } else {
-                when (agent) {
-                    "study" -> "http://$serverIp:8000/api/agents/study/process"
-                    "planner" -> "http://$serverIp:8000/api/agents/planner/schedule"
-                    "content" -> "http://$serverIp:8000/api/agents/content/draft"
-                    else -> "http://$serverIp:8000/api/agents/study/process"
-                }
+            val url = when (agent) {
+                "study" -> "http://$serverIp:8000/api/agents/study/process"
+                "planner" -> "http://$serverIp:8000/api/agents/planner/schedule"
+                "expense" -> "http://$serverIp:8000/api/agents/expense/process"
+                "content" -> "http://$serverIp:8000/api/agents/content/draft"
+                else -> "http://$serverIp:8000/api/agents/study/process"
             }
 
-            val payload = if (fileBase64 != null) {
+            val payload = (if (fileBase64 != null) {
                 if (agent == "expense") {
                     mapOf("image_base64" to fileBase64, "prompt_text" to text)
                 } else {
@@ -695,22 +941,29 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                     "content" -> mapOf("task" to text, "context" to "No context provided")
                     else -> mapOf("content" to text)
                 }
-            }
+            }).toMutableMap()
+
+            val sessionToSend = if (currentId != null && !currentId.startsWith("temp_")) currentId else null
+            sessionToSend?.let { payload["session_id"] = it }
 
             makeHttpRequest(
                 url = url,
                 bodyJson = gson.toJson(payload),
                 onSuccess = { res ->
-                    val formattedText = formatAgentResponse(agent, res)
+                    val resMap = try {
+                        gson.fromJson<Map<String, Any?>>(res, object : com.google.gson.reflect.TypeToken<Map<String, Any?>>() {}.type)
+                    } catch(e: Exception) { null }
+                    val newSessionId = resMap?.get("session_id") as? String
                     runOnUiThread {
-                        val current = chatHistories[agent] ?: emptyList()
-                        chatHistories[agent] = current + ChatMessage(sender = "agent", text = formattedText)
+                        if (newSessionId != null) {
+                            currentSessionIds[agent] = newSessionId
+                        }
+                        onResponseReceived()
                     }
                 },
                 onError = { err ->
                     runOnUiThread {
-                        val current = chatHistories[agent] ?: emptyList()
-                        chatHistories[agent] = current + ChatMessage(sender = "agent", text = "Error: $err")
+                        Toast.makeText(this, "Error: $err", Toast.LENGTH_SHORT).show()
                     }
                 }
             )
@@ -793,8 +1046,25 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     }
 
     private fun bitmapToBase64(bitmap: Bitmap): String {
+        val maxDimension = 1024
+        val width = bitmap.width
+        val height = bitmap.height
+        val scaledBitmap = if (width > maxDimension || height > maxDimension) {
+            val newWidth: Int
+            val newHeight: Int
+            if (width > height) {
+                newWidth = maxDimension
+                newHeight = (height * (maxDimension.toFloat() / width.toFloat())).toInt()
+            } else {
+                newHeight = maxDimension
+                newWidth = (width * (maxDimension.toFloat() / height.toFloat())).toInt()
+            }
+            Bitmap.createScaledBitmap(bitmap, newWidth, newHeight, true)
+        } else {
+            bitmap
+        }
         val byteArrayOutputStream = ByteArrayOutputStream()
-        bitmap.compress(Bitmap.CompressFormat.JPEG, 90, byteArrayOutputStream)
+        scaledBitmap.compress(Bitmap.CompressFormat.JPEG, 80, byteArrayOutputStream)
         val byteArray = byteArrayOutputStream.toByteArray()
         return android.util.Base64.encodeToString(byteArray, android.util.Base64.NO_WRAP)
     }
