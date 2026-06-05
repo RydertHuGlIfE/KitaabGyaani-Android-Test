@@ -148,7 +148,7 @@ The laptop runs **all agent logic and heavy computation**.
 │  │  ┌──────────────┐        ┌──────────────┐            │ │
 │  │  │   Ollama     │        │  Groq API    │            │ │
 │  │  │ (Local LLM)  │        │  (Cloud LLM) │            │ │
-│  │  │ Qwen2.5 3B   │        │  Backup Fast │            │ │
+│  │  │ Qwen2.5 3B   │        │  OCR & Fast  │            │ │
 │  │  │ RTX 3050 6GB │        │  Processing  │            │ │
 │  │  └──────────────┘        └──────────────┘            │ │
 │  └────────────────────────────────────────────────────────┘ │
@@ -178,15 +178,15 @@ The laptop runs **all agent logic and heavy computation**.
 1. Phone sends: PDF file (base64) + OCR'd notebook page
 2. Laptop receives: File → stores temp
 3. Study Agent:
-   - OCR extraction (if image)
+   - Vision-based OCR via Groq API (using llama-3.2-11b-vision-preview)
    - Text chunking
    - Prompt to Ollama/Groq: "Extract key concepts, generate flashcards..."
    - Post-processing: Format into structured JSON
 4. Response: `{ summary, flashcards[], mcqs[], concept_map }`
 
-**LLM Choice**:
+**LLM & Vision Choice**:
 - **Fast queries** (< 500 tokens): Ollama local (sub-2s)
-- **Long documents** (> 500 tokens): Groq API (backup)
+- **Long documents & OCR**: Groq API (using llama-3.2-11b-vision-preview / llama-3.3-70b-versatile)
 
 ---
 
@@ -228,9 +228,9 @@ The laptop runs **all agent logic and heavy computation**.
 **Flow**:
 1. Phone sends: Receipt photo (base64)
 2. Laptop:
-   - OCR extraction (Tesseract or similar)
-   - Parse: amount, merchant, date
-   - Prompt to LLM: "Categorize this: Food / Books / Transport / etc."
+   - Send receipt photo to Groq API (using llama-3.2-11b-vision-preview)
+   - Prompt Groq to perform OCR and directly output structured transaction data
+   - Parse JSON response: amount, merchant, date, category
 3. Response: `{ amount, category, merchant, date, confidence }`
 
 **Storage**: Logged to expense DB, weekly summary pushed to phone
@@ -408,8 +408,8 @@ Phone Dashboard Shows:
 | Language | Python 3.10+ | Server logic |
 | Framework | FastAPI | Async HTTP + WebSocket server |
 | Local LLM | Ollama + Qwen2.5 3B | Sub-5s text generation |
-| Cloud LLM | Groq API | Fast backup LLM |
-| OCR | Tesseract / EasyOCR | Document text extraction |
+| Cloud LLM & Vision | Groq API | Fast backup LLM, structured vision tasks |
+| OCR | Groq API (Vision Models) | Cloud-based fast document & receipt OCR |
 | Database | SQLite / PostgreSQL | Persistent storage |
 | Task Queue | Celery (optional) | Async task processing |
 | File Storage | Local disk / iCloud | Cache PDFs, images |
@@ -570,17 +570,20 @@ Laptop Cache:
 # 3. Install dependencies
 pip install fastapi uvicorn ollama groq
 
-# 4. Download Ollama + Qwen2.5 3B model
+# 4. Set Groq API Key (required for cloud OCR and LLM backup)
+export GROQ_API_KEY="your_groq_api_key_here"
+
+# 5. Download Ollama + Qwen2.5 3B model
 ollama pull qwen2.5:3b
 
-# 5. Start Ollama service
+# 6. Start Ollama service
 ollama serve
 
-# 6. Start FastAPI server
+# 7. Start FastAPI server
 uvicorn main:app --host 0.0.0.0 --port 8000
 
-# 7. Configure Office Kit bridge (IP, port, token)
-# 8. Test connection from phone
+# 8. Configure Office Kit bridge (IP, port, token)
+# 9. Test connection from phone
 ```
 
 ### Phone Setup
