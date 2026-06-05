@@ -18,23 +18,26 @@ class LLMService:
         )
         return response.choices[0].message.content
 
-    async def query_vision_llm(self, image_base64: str, prompt: str) -> str:
-        response = self.groq_client.chat.completions.create(
-            model="meta-llama/llama-4-scout-17b-16e-instruct",
-            messages=[
+    async def query_vision_llm(self, image_base64: str, prompt: str, system_prompt: str = None) -> str:
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({
+            "role": "user",
+            "content": [
+                {"type": "text", "text": prompt},
                 {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/jpeg;base64,{image_base64}"
-                            }
-                        }
-                    ]
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/jpeg;base64,{image_base64}"
+                    }
                 }
             ]
+        })
+
+        response = self.groq_client.chat.completions.create(
+            model="meta-llama/llama-4-scout-17b-16e-instruct",
+            messages=messages
         )
         return response.choices[0].message.content
 

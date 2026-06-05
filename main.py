@@ -1,5 +1,6 @@
 import time
 import json
+import os
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -29,10 +30,83 @@ llm_service = LLMService()
 ocr_service = OCRService()
 pdf_service = PDFService()
 
+
 study_agent = StudyAgent(llm_service, ocr_service, pdf_service)
-planner_agent = PlannerAgent(llm_service)
+planner_agent = PlannerAgent(llm_service, ocr_service, pdf_service)
 expense_agent = ExpenseAgent()
 content_agent = ContentAgent(llm_service)
+
+HISTORY_FILE = "chats_history.json"
+chat_history_db = {
+    "study": [],
+    "planner": [],
+    "expense": [],
+    "content": []
+}
+
+def load_chat_history():
+    global chat_history_db
+    try:
+        if os.path.exists(HISTORY_FILE):
+            with open(HISTORY_FILE, "r") as f:
+                chat_history_db = json.load(f)
+    except Exception as e:
+        print(f"Error loading chat history: {e}")
+
+def save_chat_history():
+    try:
+        with open(HISTORY_FILE, "w") as f:
+            json.dump(chat_history_db, f, indent=2)
+    except Exception as e:
+        print(f"Error saving chat history: {e}")
+
+load_chat_history()
+
+def format_agent_response(agent: str, data: dict) -> str:
+    try:
+        if agent == "study":
+            summary = data.get("summary", "")
+            flashcards = data.get("flashcards", [])
+            mcqs = data.get("mcqs", [])
+            out = f"📚 SUMMARY:\n{summary}\n\n🏷️ FLASHCARDS:\n"
+            for fc in flashcards:
+                out += f"• Q: {fc.get('q')}\n  A: {fc.get('a')}\n"
+            out += "\n📝 MCQs:\n"
+            for m in mcqs:
+                options_str = ", ".join(m.get("options", []))
+                out += f"• {m.get('q')}\n  Options: {options_str}\n  Answer: {m.get('answer')}\n"
+            return out
+        elif agent == "planner":
+            exam_name = data.get("exam_name", "")
+            exam_date = data.get("exam_date", "")
+            schedule = data.get("schedule", [])
+            milestones = data.get("milestones", [])
+            out = f"📅 STUDY SCHEDULE FOR: {exam_name} (Date: {exam_date})\n\n"
+            for s in schedule:
+                topics_str = ", ".join(s.get("topics", []))
+                resources_str = ", ".join(s.get("resources", []))
+                out += f"• Day {s.get('day')} ({s.get('date')}):\n  Topics: {topics_str}\n  Hours: {s.get('duration_hours')}h ({s.get('study_load')} load)\n  Resources: {resources_str}\n"
+            if milestones:
+                out += "\n🎯 MILESTONES:\n"
+                for m in milestones:
+                    out += f"• Day {m.get('day')}: {m.get('milestone')}\n"
+            return out
+        elif agent == "expense":
+            amount = data.get("amount", 0.0)
+            merchant = data.get("merchant", "Unknown")
+            category = data.get("category", "Uncategorized")
+            date = data.get("date", "TBD")
+            confidence = data.get("confidence", 1.0)
+            return f"💵 EXPENSE RECEIPT EXTRACTED:\n\n• Amount: ${amount}\n• Merchant: {merchant}\n• Category: {category}\n• Date: {date}\n• Confidence: {int(confidence * 100)}%"
+        elif agent == "content":
+            draft_text = data.get("draft_text", "")
+            suggestions = data.get("suggestions", [])
+            s_str = "\n".join([f"• {sg}" for sg in suggestions])
+            return f"📝 DRAFTED TEXT:\n\n{draft_text}\n\n💡 Suggestions:\n{s_str}"
+    except Exception as e:
+        print(f"Formatting error: {e}")
+    return str(data)
+
 
 @app.get("/", response_class=HTMLResponse)
 async def get_index():
@@ -360,6 +434,8 @@ class PlannerRequest(BaseModel):
     exam_date: str
     topics_completed: List[str]
     syllabus: List[str]
+    content: Optional[str] = None
+    is_image: bool = False
 
 class ExpenseRequest(BaseModel):
     image_base64: str
@@ -369,33 +445,122 @@ class ContentRequest(BaseModel):
     task: str
     context: str
 
+@app.post("/api/chat/history")
+async def get_chat_history():
+    return chat_history_db
+
+@app.post("/api/chat/clear")
+async def clear_chat_history():
+    global chat_history_db
+    chat_history_db = {
+        "study": [],
+        "planner": [],
+        "expense": [],
+        "content": []
+    }
+    save_chat_history()
+    return {"status": "success"}
+
 @app.post("/api/agents/study/process")
 async def process_study(req: StudyRequest):
     try:
-        return await study_agent.process_material(req.content, req.is_image, req.prompt_text)
+        history = chat_history_db.setdefault("study", [])
+        result = await study_agent.process_material(req.content, req.is_image, req.prompt_text, chat_history=history)
+        
+        formatted_resp = format_agent_response("study", result)
+        user_msg = req.prompt_text if req.prompt_text else ("Attached document/image" if req.is_image or req.content.startswith("JVBERi") else req.content)
+        history.append({
+            "sender": "user",
+            "text": user_msg,
+            "image_base64": req.content if req.is_image else None,
+            "is_image": req.is_image
+        })
+        history.append({
+            "sender": "agent",
+            "text": formatted_resp,
+            "image_base64": None,
+            "is_image": False
+        })
+        chat_history_db["study"] = history[-30:]
+        save_chat_history()
+        return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/agents/planner/schedule")
 async def process_planner(req: PlannerRequest):
     try:
-        return await planner_agent.generate_schedule(
-            req.exam_name, req.exam_date, req.topics_completed, req.syllabus
+        result = await planner_agent.generate_schedule(
+            req.exam_name, req.exam_date, req.topics_completed, req.syllabus,
+            content=req.content, is_image=req.is_image
         )
+        formatted_resp = format_agent_response("planner", result)
+        history = chat_history_db.setdefault("planner", [])
+        user_msg = f"Plan Schedule for {req.exam_name}"
+        history.append({
+            "sender": "user",
+            "text": user_msg,
+            "image_base64": req.content if req.is_image else None,
+            "is_image": req.is_image
+        })
+        history.append({
+            "sender": "agent",
+            "text": formatted_resp,
+            "image_base64": None,
+            "is_image": False
+        })
+        chat_history_db["planner"] = history[-30:]
+        save_chat_history()
+        return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/agents/expense/process")
 async def process_expense(req: ExpenseRequest):
     try:
-        return await expense_agent.process_receipt(req.image_base64, req.prompt_text)
+        result = await expense_agent.process_receipt(req.image_base64, req.prompt_text)
+        formatted_resp = format_agent_response("expense", result)
+        history = chat_history_db.setdefault("expense", [])
+        user_msg = req.prompt_text if req.prompt_text else "Receipt Upload"
+        history.append({
+            "sender": "user",
+            "text": user_msg,
+            "image_base64": req.image_base64,
+            "is_image": True
+        })
+        history.append({
+            "sender": "agent",
+            "text": formatted_resp,
+            "image_base64": None,
+            "is_image": False
+        })
+        chat_history_db["expense"] = history[-30:]
+        save_chat_history()
+        return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/agents/content/draft")
 async def process_content(req: ContentRequest):
     try:
-        return await content_agent.draft_content(req.task, req.context)
+        result = await content_agent.draft_content(req.task, req.context)
+        formatted_resp = format_agent_response("content", result)
+        history = chat_history_db.setdefault("content", [])
+        history.append({
+            "sender": "user",
+            "text": f"Task: {req.task}\nContext: {req.context}",
+            "image_base64": None,
+            "is_image": False
+        })
+        history.append({
+            "sender": "agent",
+            "text": formatted_resp,
+            "image_base64": None,
+            "is_image": False
+        })
+        chat_history_db["content"] = history[-30:]
+        save_chat_history()
+        return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -421,24 +586,101 @@ async def websocket_endpoint(websocket: WebSocket):
                     is_image = payload.get("is_image", False) or payload.get("file_base64") is not None
                     content = payload.get("file_base64") or payload.get("content", "")
                     prompt_text = payload.get("prompt_text")
-                    result = await study_agent.process_material(content, is_image, prompt_text)
+                    
+                    history = chat_history_db.setdefault("study", [])
+                    result = await study_agent.process_material(content, is_image, prompt_text, chat_history=history)
+                    
+                    formatted_resp = format_agent_response("study", result)
+                    user_msg = prompt_text if prompt_text else ("Attached document/image" if is_image or content.startswith("JVBERi") else content)
+                    history.append({
+                        "sender": "user",
+                        "text": user_msg,
+                        "image_base64": content if is_image else None,
+                        "is_image": is_image
+                    })
+                    history.append({
+                        "sender": "agent",
+                        "text": formatted_resp,
+                        "image_base64": None,
+                        "is_image": False
+                    })
+                    chat_history_db["study"] = history[-30:]
+                    save_chat_history()
                 elif agent == "planner":
+                    is_image = payload.get("is_image", False) or payload.get("file_base64") is not None
+                    content = payload.get("file_base64") or payload.get("content")
                     result = await planner_agent.generate_schedule(
                         payload.get("exam_name", ""),
                         payload.get("exam_date", ""),
                         payload.get("topics_completed", []),
-                        payload.get("syllabus", [])
+                        payload.get("syllabus", []),
+                        content=content,
+                        is_image=is_image
                     )
+                    formatted_resp = format_agent_response("planner", result)
+                    history = chat_history_db.setdefault("planner", [])
+                    user_msg = f"Plan Schedule for {payload.get('exam_name', '')}"
+                    history.append({
+                        "sender": "user",
+                        "text": user_msg,
+                        "image_base64": content if is_image else None,
+                        "is_image": is_image
+                    })
+                    history.append({
+                        "sender": "agent",
+                        "text": formatted_resp,
+                        "image_base64": None,
+                        "is_image": False
+                    })
+                    chat_history_db["planner"] = history[-30:]
+                    save_chat_history()
                 elif agent == "expense":
+                    image_base64 = payload.get("image_base64", "")
+                    prompt_text = payload.get("prompt_text")
                     result = await expense_agent.process_receipt(
-                        payload.get("image_base64", ""),
-                        payload.get("prompt_text")
+                        image_base64,
+                        prompt_text
                     )
+                    formatted_resp = format_agent_response("expense", result)
+                    history = chat_history_db.setdefault("expense", [])
+                    user_msg = prompt_text if prompt_text else "Receipt Upload"
+                    history.append({
+                        "sender": "user",
+                        "text": user_msg,
+                        "image_base64": image_base64,
+                        "is_image": True
+                    })
+                    history.append({
+                        "sender": "agent",
+                        "text": formatted_resp,
+                        "image_base64": None,
+                        "is_image": False
+                    })
+                    chat_history_db["expense"] = history[-30:]
+                    save_chat_history()
                 elif agent == "content":
+                    task = payload.get("task", "")
+                    context = payload.get("context", "")
                     result = await content_agent.draft_content(
-                        payload.get("task", ""),
-                        payload.get("context", "")
+                        task,
+                        context
                     )
+                    formatted_resp = format_agent_response("content", result)
+                    history = chat_history_db.setdefault("content", [])
+                    history.append({
+                        "sender": "user",
+                        "text": f"Task: {task}\nContext: {context}",
+                        "image_base64": None,
+                        "is_image": False
+                    })
+                    history.append({
+                        "sender": "agent",
+                        "text": formatted_resp,
+                        "image_base64": None,
+                        "is_image": False
+                    })
+                    chat_history_db["content"] = history[-30:]
+                    save_chat_history()
                 else:
                     status = "error"
                     result = {"detail": f"Unknown agent: {agent}"}

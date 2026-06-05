@@ -171,6 +171,53 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             } catch (e: Exception) {
                 isConnected = false
             }
+
+            // Only fetch history when IP looks like a complete address (avoids crash during typing)
+            val ipPattern = Regex("""^\d{1,3}(\.\d{1,3}){3}$""")
+            if (ipPattern.matches(serverIp)) {
+                makeHttpRequest(
+                    url = "http://$serverIp:8000/api/chat/history",
+                    bodyJson = "{}",
+                    onSuccess = { res ->
+                        runOnUiThread {
+                            try {
+                                val type = object : com.google.gson.reflect.TypeToken<Map<String, List<Map<String, Any?>>>>() {}.type
+                                val historyMap = gson.fromJson<Map<String, List<Map<String, Any?>>>>(res, type)
+                                if (historyMap != null) {
+                                    historyMap.forEach { (agent, messages) ->
+                                        val list = messages.mapNotNull { msg ->
+                                            val sender = msg["sender"] as? String ?: return@mapNotNull null
+                                            val text = msg["text"] as? String ?: ""
+                                            val isImage = msg["is_image"] as? Boolean ?: false
+                                            val imgBase64 = msg["image_base64"] as? String
+
+                                            val bitmap = if (isImage && !imgBase64.isNullOrEmpty()) {
+                                                try {
+                                                    val decodedBytes = android.util.Base64.decode(imgBase64, android.util.Base64.DEFAULT)
+                                                    BitmapFactory.decodeByteArray(decodedBytes, 0, decodedBytes.size)
+                                                } catch (e: Exception) {
+                                                    null
+                                                }
+                                            } else {
+                                                null
+                                            }
+                                            ChatMessage(sender = sender, text = text, bitmap = bitmap)
+                                        }
+                                        if (list.isNotEmpty()) {
+                                            chatHistories[agent] = list
+                                        }
+                                    }
+                                }
+                            } catch (e: Exception) {
+                                e.printStackTrace()
+                            }
+                        }
+                    },
+                    onError = { _ ->
+                        // Silently fail — history is not critical for app launch
+                    }
+                )
+            }
         }
 
         LaunchedEffect(currentHistory.size) {
@@ -709,23 +756,28 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     }
 
     private fun makeHttpRequest(url: String, bodyJson: String, onSuccess: (String) -> Unit, onError: (String) -> Unit) {
-        val mediaType = "application/json; charset=utf-8".toMediaTypeOrNull()
-        val requestBody = bodyJson.toRequestBody(mediaType)
-        val request = Request.Builder().url(url).post(requestBody).build()
+        try {
+            val mediaType = "application/json; charset=utf-8".toMediaTypeOrNull()
+            val requestBody = bodyJson.toRequestBody(mediaType)
+            val request = Request.Builder().url(url).post(requestBody).build()
 
-        CoroutineScope(Dispatchers.IO).launch {
-            try {
-                httpClient.newCall(request).execute().use { response ->
-                    if (response.isSuccessful) {
-                        val bodyStr = response.body?.string() ?: ""
-                        onSuccess(bodyStr)
-                    } else {
-                        onError("Server code: ${response.code}")
+            CoroutineScope(Dispatchers.IO).launch {
+                try {
+                    httpClient.newCall(request).execute().use { response ->
+                        if (response.isSuccessful) {
+                            val bodyStr = response.body?.string() ?: ""
+                            onSuccess(bodyStr)
+                        } else {
+                            onError("Server code: ${response.code}")
+                        }
                     }
+                } catch (e: Exception) {
+                    onError(e.message ?: "Connection failure")
                 }
-            } catch (e: IOException) {
-                onError(e.message ?: "Connection failure")
             }
+        } catch (e: Exception) {
+            // Malformed URL or other setup error — silently ignore
+            onError(e.message ?: "Invalid request")
         }
     }
 
