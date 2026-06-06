@@ -1,12 +1,14 @@
 import time
 import json
 import os
+os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
 import uuid
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
+from dotenv import load_dotenv
 
 from config import Config
 from services.llm_service import LLMService
@@ -17,6 +19,13 @@ from agents.planner_agent import PlannerAgent
 from agents.expense_agent import ExpenseAgent
 from agents.content_agent import ContentAgent
 from agents.quiz_agent import QuizAgent
+
+from services.planner_service import TOKEN_FILE, get_credentials, is_env_configured, get_oauth_flow
+
+class ConfigSchema(BaseModel):
+    client_id: str
+    client_secret: str
+    redirect_uri: str
 
 app = FastAPI(title="KitaabGyaani Backend")
 
@@ -505,6 +514,7 @@ class StudyRequest(BaseModel):
 class PlannerRequest(BaseModel):
     exam_name: Optional[str] = ""
     exam_date: Optional[str] = ""
+    start_date: Optional[str] = None
     topics_completed: Optional[List[str]] = []
     syllabus: Optional[List[str]] = []
     content: Optional[str] = None
@@ -603,10 +613,11 @@ async def process_study(req: StudyRequest):
 @app.post("/api/agents/planner/schedule")
 async def process_planner(req: PlannerRequest):
     try:
+        load_dotenv(override=True)
         session, session_id = get_or_create_session("planner", req.session_id)
         result = await planner_agent.generate_schedule(
             req.exam_name, req.exam_date, req.topics_completed, req.syllabus,
-            content=req.content, is_image=req.is_image
+            content=req.content, is_image=req.is_image, start_date=req.start_date
         )
         formatted_resp = format_agent_response("planner", result)
         user_msg = f"Plan Schedule for {req.exam_name}"
@@ -683,12 +694,148 @@ async def process_content(req: ContentRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/login")
+async def login(request: Request):
+    load_dotenv(override=True)
+    redirect_uri = os.getenv("GOOGLE_REDIRECT_URI")
+    if not redirect_uri:
+        host_header = request.headers.get("host", "localhost:8000")
+        import re
+        host_parts = host_header.split(":")
+        host_name = host_parts[0]
+        port = f":{host_parts[1]}" if len(host_parts) > 1 else ""
+        if re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", host_name):
+            if host_name != "127.0.0.1":
+                host_name = f"{host_name}.nip.io"
+        redirect_uri = f"http://{host_name}{port}/callback"
+    try:
+        flow = get_oauth_flow(redirect_uri=redirect_uri)
+        authorization_url, state = flow.authorization_url(
+            access_type='offline',
+            include_granted_scopes='true',
+            prompt='consent'
+        )
+        return RedirectResponse(url=authorization_url)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"OAuth flow initiation failed: {e}")
+
+@app.get("/callback")
+async def callback(request: Request):
+    load_dotenv(override=True)
+    redirect_uri = os.getenv("GOOGLE_REDIRECT_URI")
+    if not redirect_uri:
+        host_header = request.headers.get("host", "localhost:8000")
+        import re
+        host_parts = host_header.split(":")
+        host_name = host_parts[0]
+        port = f":{host_parts[1]}" if len(host_parts) > 1 else ""
+        if re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", host_name):
+            if host_name != "127.0.0.1":
+                host_name = f"{host_name}.nip.io"
+        redirect_uri = f"http://{host_name}{port}/callback"
+    try:
+        flow = get_oauth_flow(redirect_uri=redirect_uri)
+        flow.fetch_token(authorization_response=str(request.url))
+        creds = flow.credentials
+        with open(TOKEN_FILE, 'w') as token:
+            token.write(creds.to_json())
+        return HTMLResponse(content="""
+            <html>
+                <head>
+                    <title>Google Calendar Authenticated</title>
+                    <style>
+                        body {
+                            background-color: #0f172a;
+                            color: #ffffff;
+                            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                            display: flex;
+                            align-items: center;
+                            justify-content: center;
+                            height: 100vh;
+                            margin: 0;
+                        }
+                        .container {
+                            text-align: center;
+                            padding: 2.5rem;
+                            background-color: #1e293b;
+                            border-radius: 12px;
+                            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3);
+                            border: 1px solid #334155;
+                            max-width: 400px;
+                        }
+                        h1 { color: #10b981; font-size: 24px; margin-bottom: 10px; }
+                        p { color: #94a3b8; font-size: 14px; margin-bottom: 20px; }
+                        .btn {
+                            display: inline-block;
+                            background-color: #6366f1;
+                            color: white;
+                            padding: 10px 20px;
+                            text-decoration: none;
+                            border-radius: 6px;
+                            font-weight: bold;
+                            transition: background-color 0.2s;
+                        }
+                        .btn:hover { background-color: #4f46e5; }
+                    </style>
+                </head>
+                <body>
+                    <div class="container">
+                        <h1>✓ Calendar Connected!</h1>
+                        <p>Google Calendar has been successfully linked to KitaabGyaani. You can now return to the app.</p>
+                        <a href="javascript:window.close();" class="btn">Close Window</a>
+                    </div>
+                </body>
+            </html>
+        """)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"OAuth callback exchange failed: {e}")
+
+@app.api_route("/api/calendar/status", methods=["GET", "POST"])
+async def calendar_status():
+    load_dotenv(override=True)
+    creds = get_credentials()
+    if creds and creds.valid:
+        return {"connected": True}
+    return {"connected": False}
+
+@app.post("/api/calendar/configure")
+async def configure_calendar(config: ConfigSchema):
+    try:
+        env_lines = []
+        if os.path.exists(".env"):
+            with open(".env", "r") as f:
+                env_lines = f.readlines()
+        
+        env_dict = {}
+        for line in env_lines:
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                env_dict[k.strip()] = v.strip()
+        
+        env_dict["GOOGLE_CLIENT_ID"] = config.client_id
+        env_dict["GOOGLE_CLIENT_SECRET"] = config.client_secret
+        env_dict["GOOGLE_REDIRECT_URI"] = config.redirect_uri
+        
+        with open(".env", "w") as f:
+            for k, v in env_dict.items():
+                f.write(f"{k}={v}\n")
+        
+        os.environ["GOOGLE_CLIENT_ID"] = config.client_id
+        os.environ["GOOGLE_CLIENT_SECRET"] = config.client_secret
+        os.environ["GOOGLE_REDIRECT_URI"] = config.redirect_uri
+        
+        return {"status": "success", "message": "Google credentials configured successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
     try:
         while True:
             data = await websocket.receive_text()
+            load_dotenv(override=True)
             request = json.loads(data)
             
             req_id = request.get("id", "")
@@ -738,7 +885,8 @@ async def websocket_endpoint(websocket: WebSocket):
                         payload.get("topics_completed", []),
                         payload.get("syllabus", []),
                         content=content,
-                        is_image=is_image
+                        is_image=is_image,
+                        start_date=payload.get("start_date")
                     )
                     formatted_resp = format_agent_response("planner", result)
                     user_msg = f"Plan Schedule for {payload.get('exam_name', '')}"

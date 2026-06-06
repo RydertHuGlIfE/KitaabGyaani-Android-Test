@@ -9,4 +9,6 @@ build/
 app/build/
 local.properties
 .idea/
-*.iml
+
+client_secret*.json
+token.json

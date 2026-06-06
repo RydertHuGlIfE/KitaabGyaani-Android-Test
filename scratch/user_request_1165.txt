@@ -1,0 +1,39 @@
+<USER_REQUEST>
+import os
+import sys
+import json
+import requests
+from datetime import datetime, date, time, timedelta
+from zoneinfo import ZoneInfo
+from typing import Optional
+
+import dotenv
+from fastapi import FastAPI, Request, HTTPException, status
+from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+
+dotenv.load_dotenv()
+os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
+
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import Flow
+from google.auth.transport.requests import Request as GoogleRequest
+
+from planner import (
+    get_calendar_service,
+    get_primary_timezone,
+    fetch_busy_intervals,
+    find_free_study_slots,
+    insert_study_sessions
+)
+
+TOKEN_FILE = "token.json"
+SCOPES = ['https://www.googleapis.com/auth/calendar']
+
+app = FastAPI(title="Google Calendar Study Planner Agent")
+os.makedirs("static", exist_ok=True)
+
+class ConfigSchema(BaseModel):
+    client_id: str
+<truncated 23208 bytes>

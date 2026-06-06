@@ -1,6 +1,9 @@
 package com.kitaabgyaani.app
 
 import android.app.Activity
+import android.app.DatePickerDialog
+import java.util.Calendar
+import java.util.Locale
 import android.content.ContentResolver
 import android.content.Context
 import android.content.Intent
@@ -16,6 +19,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -126,6 +130,44 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         var serverIp by remember { mutableStateOf(sharedPrefs.getString("server_ip", "10.0.2.2") ?: "10.0.2.2") }
         var showSettingsDialog by remember { mutableStateOf(false) }
         var isConnected by remember { mutableStateOf(false) }
+        
+        // Google Calendar connection and date selection states
+        val initCalendar = remember { Calendar.getInstance() }
+        val defaultStartStr = remember {
+            String.format(Locale.US, "%04d-%02d-%02d",
+                initCalendar.get(Calendar.YEAR),
+                initCalendar.get(Calendar.MONTH) + 1,
+                initCalendar.get(Calendar.DAY_OF_MONTH)
+            )
+        }
+        val defaultEndStr = remember {
+            val endCal = Calendar.getInstance()
+            endCal.add(Calendar.DAY_OF_MONTH, 7)
+            String.format(Locale.US, "%04d-%02d-%02d",
+                endCal.get(Calendar.YEAR),
+                endCal.get(Calendar.MONTH) + 1,
+                endCal.get(Calendar.DAY_OF_MONTH)
+            )
+        }
+
+        var plannerStartDate by remember { mutableStateOf(defaultStartStr) }
+        var plannerEndDate by remember { mutableStateOf(defaultEndStr) }
+        var isCalendarConnected by remember { mutableStateOf(false) }
+
+        fun showDatePicker(ctx: Context, onDateSelected: (String) -> Unit) {
+            val cal = Calendar.getInstance()
+            DatePickerDialog(
+                ctx,
+                { _, year, month, day ->
+                    val formatted = String.format(Locale.US, "%04d-%02d-%02d", year, month + 1, day)
+                    onDateSelected(formatted)
+                },
+                cal.get(Calendar.YEAR),
+                cal.get(Calendar.MONTH),
+                cal.get(Calendar.DAY_OF_MONTH)
+            ).show()
+        }
+
         var currentAgent by remember { mutableStateOf("study") }
         var inputText by remember { mutableStateOf("") }
         var selectedFileBase64 by remember { mutableStateOf<String?>(null) }
@@ -308,6 +350,33 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                     fetchHistory(serverIp)
                 }
                 delay(5000)
+            }
+        }
+
+        LaunchedEffect(currentAgent, isConnected, serverIp) {
+            while (true) {
+                if (currentAgent == "planner" && isConnected) {
+                    try {
+                        makeHttpRequest(
+                            url = "http://$serverIp:8000/api/calendar/status",
+                            bodyJson = "{}",
+                            onSuccess = { res ->
+                                try {
+                                    val statusMap = gson.fromJson<Map<String, Any?>>(res, object : com.google.gson.reflect.TypeToken<Map<String, Any?>>() {}.type)
+                                    isCalendarConnected = statusMap["connected"] as? Boolean ?: false
+                                } catch (e: Exception) {
+                                    isCalendarConnected = false
+                                }
+                            },
+                            onError = { _ ->
+                                isCalendarConnected = false
+                            }
+                        )
+                    } catch (e: Exception) {
+                        isCalendarConnected = false
+                    }
+                }
+                delay(3000)
             }
         }
 
@@ -722,6 +791,8 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                                                 fileBase64 = selectedFileBase64,
                                                 isImage = selectedFileIsImage,
                                                 imageBitmap = selectedImageBitmap,
+                                                plannerStartDate = plannerStartDate,
+                                                plannerEndDate = plannerEndDate,
                                                 onClearAttachment = {
                                                     selectedFileBase64 = null
                                                     selectedImageBitmap = null
@@ -760,6 +831,8 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                                                 fileBase64 = selectedFileBase64,
                                                 isImage = selectedFileIsImage,
                                                 imageBitmap = selectedImageBitmap,
+                                                plannerStartDate = plannerStartDate,
+                                                plannerEndDate = plannerEndDate,
                                                 onClearAttachment = {
                                                     selectedFileBase64 = null
                                                     selectedImageBitmap = null
@@ -900,6 +973,110 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                             }
                         }
                     } else {
+                        if (currentAgent == "planner") {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp, vertical = 8.dp)
+                                    .background(DarkSurface, shape = RoundedCornerShape(12.dp))
+                                    .border(
+                                        1.dp,
+                                        if (isCalendarConnected) Color(0xFF10B981).copy(alpha = 0.5f) else Color(0xFFFFB300).copy(alpha = 0.5f),
+                                        shape = RoundedCornerShape(12.dp)
+                                    )
+                                    .padding(12.dp)
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(8.dp)
+                                                .clip(CircleShape)
+                                                .background(if (isCalendarConnected) Color(0xFF10B981) else Color(0xFFFFB300))
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(
+                                            text = if (isCalendarConnected) "Google Calendar Linked" else "Google Calendar Not Connected",
+                                            color = Color.White,
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                    if (!isCalendarConnected) {
+                                        Text(
+                                            text = "LINK",
+                                            color = Color(0xFFFFB300),
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            modifier = Modifier
+                                                .clickable {
+                                                    // Open Google OAuth flow on backend using the nip.io wildcard domain
+                                                    val loginUrl = "http://$serverIp.nip.io:8000/login"
+                                                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(loginUrl))
+                                                    context.startActivity(intent)
+                                                }
+                                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                                        )
+                                    }
+                                }
+                                
+                                Spacer(modifier = Modifier.height(10.dp))
+                                
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .background(Color.Black.copy(alpha = 0.2f), shape = RoundedCornerShape(8.dp))
+                                            .clickable {
+                                                showDatePicker(context) { date -> plannerStartDate = date }
+                                            }
+                                            .padding(8.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                            Text("START DATE", color = TextMuted, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                                            Spacer(modifier = Modifier.height(2.dp))
+                                            Text(
+                                                text = plannerStartDate,
+                                                color = Color.White,
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.SemiBold
+                                            )
+                                        }
+                                    }
+                                    
+                                    Box(
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .background(Color.Black.copy(alpha = 0.2f), shape = RoundedCornerShape(8.dp))
+                                            .clickable {
+                                                showDatePicker(context) { date -> plannerEndDate = date }
+                                            }
+                                            .padding(8.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                            Text("END DATE / EXAM", color = TextMuted, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                                            Spacer(modifier = Modifier.height(2.dp))
+                                            Text(
+                                                text = plannerEndDate,
+                                                color = Color.White,
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.SemiBold
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
                         LazyColumn(
                             state = listState,
                             modifier = Modifier
@@ -910,7 +1087,15 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                             contentPadding = PaddingValues(vertical = 12.dp)
                         ) {
                             items(currentHistory) { message ->
-                                ChatBubble(message = message, onPlayTTS = { speak(message.text) })
+                                ChatBubble(
+                                    message = message,
+                                    onPlayTTS = { speak(message.text) },
+                                    onConnectCalendar = {
+                                        val loginUrl = "http://$serverIp.nip.io:8000/login"
+                                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(loginUrl))
+                                        context.startActivity(intent)
+                                    }
+                                )
                             }
                         }
                     }
@@ -921,7 +1106,11 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
 }
 
     @Composable
-    fun ChatBubble(message: ChatMessage, onPlayTTS: () -> Unit) {
+    fun ChatBubble(
+        message: ChatMessage,
+        onPlayTTS: () -> Unit,
+        onConnectCalendar: () -> Unit = {}
+    ) {
         val isUser = message.sender == "user"
         Column(
             modifier = Modifier.fillMaxWidth(),
@@ -953,11 +1142,37 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                         )
                         Spacer(modifier = Modifier.height(6.dp))
                     }
+
+                    val hasConnectButton = message.text.contains("[Connect Google Calendar]")
+                    val cleanedText = if (hasConnectButton) {
+                        message.text.substringBefore("[Connect Google Calendar]").trim()
+                    } else {
+                        message.text
+                    }
+
                     Text(
-                        text = message.text,
+                        text = cleanedText,
                         color = TextLight,
                         fontSize = 14.sp
                     )
+
+                    if (hasConnectButton) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Button(
+                            onClick = { onConnectCalendar() },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFFB300)),
+                            shape = RoundedCornerShape(8.dp),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = "Connect Google Calendar",
+                                color = Color.Black,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
 
                     if (!isUser) {
                         Spacer(modifier = Modifier.height(6.dp))
@@ -987,6 +1202,8 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         fileBase64: String? = null,
         isImage: Boolean = false,
         imageBitmap: Bitmap? = null,
+        plannerStartDate: String = "",
+        plannerEndDate: String = "",
         onClearAttachment: () -> Unit = {},
         onResponseReceived: () -> Unit = {}
     ) {
@@ -1026,8 +1243,9 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                     "planner" -> {
                         val topics = text.split(",").map { it.trim() }
                         mapOf(
-                            "exam_name" to "Upcoming Exam",
-                            "exam_date" to "2026-06-25",
+                            "exam_name" to "Planner Schedule / Exam",
+                            "exam_date" to plannerEndDate,
+                            "start_date" to plannerStartDate,
                             "syllabus" to topics,
                             "topics_completed" to emptyList<String>()
                         )
@@ -1078,8 +1296,9 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                     "planner" -> {
                         val topics = text.split(",").map { it.trim() }
                         mapOf(
-                            "exam_name" to "Upcoming Exam",
-                            "exam_date" to "2026-06-25",
+                            "exam_name" to "Planner Schedule / Exam",
+                            "exam_date" to plannerEndDate,
+                            "start_date" to plannerStartDate,
                             "syllabus" to topics,
                             "topics_completed" to emptyList<String>()
                         )
