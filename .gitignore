@@ -12,3 +12,6 @@ local.properties
 
 client_secret*.json
 token.json
+budget_data.json
+chats_history.json
+scratch/

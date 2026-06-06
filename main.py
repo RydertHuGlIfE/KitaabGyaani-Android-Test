@@ -526,6 +526,10 @@ class ExpenseRequest(BaseModel):
     prompt_text: Optional[str] = None
     session_id: Optional[str] = None
 
+class ManualExpenseRequest(BaseModel):
+    amount: float
+    description: str
+
 class ContentRequest(BaseModel):
     task: str
     context: str
@@ -665,6 +669,28 @@ async def process_expense(req: ExpenseRequest):
         if isinstance(result, dict):
             result["session_id"] = actual_session_id
         return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/agents/expense/budget-status")
+async def get_budget_status_endpoint():
+    try:
+        from services.budget_service import get_budget_summary
+        return get_budget_summary()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/agents/expense/add-manual")
+async def add_manual_expense(req: ManualExpenseRequest):
+    try:
+        from services.budget_service import add_expense
+        add_expense(
+            amount=req.amount,
+            category="Others",
+            merchant="Manual Entry",
+            description=req.description
+        )
+        return {"status": "ok", "message": f"Added ₹{req.amount} - {req.description}"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

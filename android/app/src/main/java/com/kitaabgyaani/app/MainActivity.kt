@@ -201,6 +201,11 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         var isCalendarConnected by remember { mutableStateOf(false) }
         var isClearingEvents by remember { mutableStateOf(false) }
 
+        var showManualAddDialog by remember { mutableStateOf(false) }
+        var manualAmount by remember { mutableStateOf("") }
+        var manualDescription by remember { mutableStateOf("") }
+        var isSavingManualExpense by remember { mutableStateOf(false) }
+
         fun showDatePicker(ctx: Context, onDateSelected: (String) -> Unit) {
             val cal = Calendar.getInstance()
             DatePickerDialog(
@@ -1258,6 +1263,43 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                             }
                         }
 
+                        // Simple Add Expense button for expense tab
+                        if (currentAgent == "expense") {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp, vertical = 6.dp),
+                                horizontalArrangement = Arrangement.End
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(20.dp))
+                                        .background(SecondaryCyan.copy(alpha = 0.15f))
+                                        .clickable {
+                                            manualAmount = ""
+                                            manualDescription = ""
+                                            showManualAddDialog = true
+                                        }
+                                        .padding(horizontal = 14.dp, vertical = 8.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Add,
+                                        contentDescription = "Add Expense",
+                                        tint = SecondaryCyan,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(
+                                        text = "Add Expense",
+                                        color = SecondaryCyan,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                            }
+                        }
+
                         LazyColumn(
                             state = listState,
                             modifier = Modifier
@@ -1313,6 +1355,109 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                     }
                 }
             }
+        }
+
+        // Manual Add Expense Dialog
+        if (showManualAddDialog) {
+            AlertDialog(
+                onDismissRequest = { if (!isSavingManualExpense) showManualAddDialog = false },
+                title = { Text("Add Expense", color = TextLight, fontWeight = FontWeight.Bold) },
+                text = {
+                    Column {
+                        Text("Log what you spent", color = TextMuted, fontSize = 12.sp)
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        OutlinedTextField(
+                            value = manualAmount,
+                            onValueChange = { manualAmount = it },
+                            label = { Text("Amount (₹)", color = TextMuted) },
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedTextColor = TextLight,
+                                unfocusedTextColor = TextLight,
+                                focusedBorderColor = SecondaryCyan,
+                                unfocusedBorderColor = DarkOutlineSoft,
+                                focusedContainerColor = DarkSurfaceField,
+                                unfocusedContainerColor = DarkSurfaceField,
+                                cursorColor = SecondaryCyan
+                            ),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+
+                        Spacer(modifier = Modifier.height(10.dp))
+
+                        OutlinedTextField(
+                            value = manualDescription,
+                            onValueChange = { manualDescription = it },
+                            label = { Text("Spent on (e.g. Coffee, Uber)", color = TextMuted) },
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedTextColor = TextLight,
+                                unfocusedTextColor = TextLight,
+                                focusedBorderColor = SecondaryCyan,
+                                unfocusedBorderColor = DarkOutlineSoft,
+                                focusedContainerColor = DarkSurfaceField,
+                                unfocusedContainerColor = DarkSurfaceField,
+                                cursorColor = SecondaryCyan
+                            ),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                },
+                confirmButton = {
+                    if (isSavingManualExpense) {
+                        CircularProgressIndicator(
+                            color = SecondaryCyan,
+                            modifier = Modifier.size(24.dp)
+                        )
+                    } else {
+                        TextButton(
+                            onClick = {
+                                val amountVal = manualAmount.toFloatOrNull()
+                                if (amountVal == null || amountVal <= 0f) {
+                                    Toast.makeText(context, "Enter a valid amount", Toast.LENGTH_SHORT).show()
+                                    return@TextButton
+                                }
+                                if (manualDescription.trim().isEmpty()) {
+                                    Toast.makeText(context, "Enter what you spent on", Toast.LENGTH_SHORT).show()
+                                    return@TextButton
+                                }
+                                isSavingManualExpense = true
+                                val bodyJson = gson.toJson(mapOf(
+                                    "amount" to amountVal,
+                                    "description" to manualDescription.trim()
+                                ))
+                                makeHttpRequest(
+                                    url = "http://$serverIp:8000/api/agents/expense/add-manual",
+                                    bodyJson = bodyJson,
+                                    onSuccess = { _ ->
+                                        (context as? Activity)?.runOnUiThread {
+                                            isSavingManualExpense = false
+                                            showManualAddDialog = false
+                                            Toast.makeText(context, "₹${amountVal.toInt()} added!", Toast.LENGTH_SHORT).show()
+                                        }
+                                    },
+                                    onError = { err ->
+                                        (context as? Activity)?.runOnUiThread {
+                                            isSavingManualExpense = false
+                                            Toast.makeText(context, "Error: $err", Toast.LENGTH_LONG).show()
+                                        }
+                                    }
+                                )
+                            }
+                        ) {
+                            Text("SAVE", color = SecondaryCyan, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                },
+                dismissButton = {
+                    TextButton(
+                        onClick = { showManualAddDialog = false },
+                        enabled = !isSavingManualExpense
+                    ) {
+                        Text("CANCEL", color = TextMuted)
+                    }
+                },
+                containerColor = DarkSurfaceCard
+            )
         }
     }
 }
@@ -1901,7 +2046,7 @@ fun GameScreen(
 
             // 3. Move meteors down (thread-safe copy updates)
             val updatedMeteors = meteors.map {
-                var newY = it.y + 4f
+                var newY = it.y + 1.5f
                 if (newY > height && height > 0) {
                     newY = 50f
                 }
