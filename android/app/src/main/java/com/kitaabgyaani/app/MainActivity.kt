@@ -80,7 +80,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         tts = TextToSpeech(this, this)
 
         setContent {
-            KitaabGyaaniTheme {
+            KitaabGyaaniTheme(darkTheme = true) {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
@@ -482,7 +482,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                 drawerState = drawerState,
             drawerContent = {
                 ModalDrawerSheet(
-                    drawerContainerColor = DarkSurface,
+                    drawerContainerColor = DarkSurfaceRaised,
                     modifier = Modifier.width(280.dp)
                 ) {
                     Column(
@@ -503,13 +503,16 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                                 currentSessionIds[currentAgent] = null
                                 scope.launch { drawerState.close() }
                             },
-                            colors = ButtonDefaults.buttonColors(containerColor = PrimaryIndigo),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = PrimaryIndigo,
+                                contentColor = MaterialTheme.colorScheme.onPrimary
+                            ),
                             modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(12.dp)
                         ) {
-                            Icon(Icons.Default.Add, contentDescription = "New Chat", tint = Color.White)
+                            Icon(Icons.Default.Add, contentDescription = "New Chat")
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text("New Chat", color = Color.White, fontWeight = FontWeight.Bold)
+                            Text("New Chat", fontWeight = FontWeight.SemiBold)
                         }
                         
                         Spacer(modifier = Modifier.height(24.dp))
@@ -543,7 +546,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                                         modifier = Modifier
                                             .fillMaxWidth()
                                             .clip(RoundedCornerShape(8.dp))
-                                            .background(if (isSelected) PrimaryIndigo.copy(alpha = 0.2f) else Color.Transparent)
+                                            .background(if (isSelected) PrimarySoft else Color.Transparent)
                                             .clickable {
                                                 currentSessionIds[currentAgent] = session.id
                                                 scope.launch { drawerState.close() }
@@ -588,9 +591,9 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                             colors = ButtonDefaults.buttonColors(containerColor = Color.Transparent),
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            Icon(Icons.Default.Delete, contentDescription = "Clear History", tint = Color.Red)
+                            Icon(Icons.Default.Delete, contentDescription = "Clear History", tint = AccentError)
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text("Clear All Chats", color = Color.Red, fontWeight = FontWeight.Bold)
+                            Text("Clear All Chats", color = AccentError, fontWeight = FontWeight.SemiBold)
                         }
                     }
                 }
@@ -614,7 +617,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                                         modifier = Modifier
                                             .size(6.dp)
                                             .clip(RoundedCornerShape(3.dp))
-                                            .background(if (isConnected) AccentEmerald else Color.Red)
+                                            .background(if (isConnected) AccentEmerald else AccentError)
                                     )
                                     Spacer(modifier = Modifier.width(4.dp))
                                     Text(
@@ -625,7 +628,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                                 }
                             }
                         },
-                        colors = TopAppBarDefaults.topAppBarColors(containerColor = DarkSurface),
+                        colors = TopAppBarDefaults.topAppBarColors(containerColor = DarkSurfaceRaised),
                         actions = {
                             IconButton(onClick = { filePickerLauncher.launch("*/*") }) {
                                 Icon(Icons.Default.AttachFile, contentDescription = "Upload Document", tint = TextLight)
@@ -655,7 +658,10 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                                             focusedTextColor = TextLight,
                                             unfocusedTextColor = TextLight,
                                             focusedBorderColor = PrimaryIndigo,
-                                            unfocusedBorderColor = DarkSurface
+                                            unfocusedBorderColor = DarkOutlineSoft,
+                                            focusedContainerColor = DarkSurfaceField,
+                                            unfocusedContainerColor = DarkSurfaceField,
+                                            cursorColor = PrimaryIndigo
                                         ),
                                         modifier = Modifier.fillMaxWidth()
                                     )
@@ -663,17 +669,17 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                             },
                             confirmButton = {
                                 TextButton(onClick = { showSettingsDialog = false }) {
-                                    Text("Done", color = PrimaryIndigo, fontWeight = FontWeight.Bold)
+                                    Text("Done", color = PrimaryIndigo, fontWeight = FontWeight.SemiBold)
                                 }
                             },
-                            containerColor = DarkSurface
+                            containerColor = DarkSurfaceCard
                         )
                     }
                 },
                 bottomBar = {
                     Column(
                         modifier = Modifier
-                            .background(DarkSurface)
+                            .background(DarkSurfaceRaised)
                             .padding(horizontal = 8.dp, vertical = 8.dp)
                             .navigationBarsPadding()
                             .imePadding()
@@ -683,7 +689,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .padding(bottom = 8.dp)
-                                    .background(DarkBackground, shape = RoundedCornerShape(12.dp))
+                                    .background(DarkSurfaceField, shape = RoundedCornerShape(12.dp))
                                     .padding(8.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
@@ -699,13 +705,13 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                                     Box(
                                         modifier = Modifier
                                             .size(48.dp)
-                                            .background(PrimaryIndigo, shape = RoundedCornerShape(8.dp)),
+                                            .background(PrimarySoft, shape = RoundedCornerShape(8.dp)),
                                         contentAlignment = Alignment.Center
                                     ) {
                                         Icon(
                                             imageVector = if (selectedFileName?.endsWith(".pdf", ignoreCase = true) == true) Icons.Default.Description else Icons.Default.Share,
                                             contentDescription = "File Icon",
-                                            tint = Color.White
+                                            tint = PrimaryIndigo
                                         )
                                     }
                                 }
@@ -731,7 +737,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                                     selectedImageBitmap = null
                                     selectedFileName = null
                                 }) {
-                                    Icon(Icons.Default.Close, contentDescription = "Clear Attachment", tint = Color.Red)
+                                    Icon(Icons.Default.Close, contentDescription = "Clear Attachment", tint = AccentError)
                                 }
                             }
                         }
@@ -752,7 +758,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                                         cameraPermissionLauncher.launch(android.Manifest.permission.CAMERA)
                                     }
                                 },
-                                colors = IconButtonDefaults.iconButtonColors(containerColor = DarkBackground)
+                                colors = IconButtonDefaults.iconButtonColors(containerColor = DarkSurfaceField)
                             ) {
                                 Icon(Icons.Default.Add, contentDescription = "Camera", tint = SecondaryCyan)
                             }
@@ -765,7 +771,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                                     }
                                     speechLauncher.launch(intent)
                                 },
-                                colors = IconButtonDefaults.iconButtonColors(containerColor = DarkBackground)
+                                colors = IconButtonDefaults.iconButtonColors(containerColor = DarkSurfaceField)
                             ) {
                                 Icon(Icons.Default.Mic, contentDescription = "Voice Input", tint = SecondaryCyan)
                             }
@@ -810,7 +816,10 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                                     focusedTextColor = TextLight,
                                     unfocusedTextColor = TextLight,
                                     focusedBorderColor = PrimaryIndigo,
-                                    unfocusedBorderColor = DarkBackground
+                                    unfocusedBorderColor = DarkOutlineSoft,
+                                    focusedContainerColor = DarkSurfaceField,
+                                    unfocusedContainerColor = DarkSurfaceField,
+                                    cursorColor = PrimaryIndigo
                                 ),
                                 modifier = Modifier.weight(1f)
                             )
@@ -846,9 +855,12 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                                         }
                                     }
                                 },
-                                colors = IconButtonDefaults.iconButtonColors(containerColor = PrimaryIndigo)
+                                colors = IconButtonDefaults.iconButtonColors(
+                                    containerColor = PrimaryIndigo,
+                                    contentColor = MaterialTheme.colorScheme.onPrimary
+                                )
                             ) {
-                                Icon(Icons.Default.Send, contentDescription = "Send", tint = Color.White)
+                                Icon(Icons.Default.Send, contentDescription = "Send")
                             }
                         }
                     }
@@ -858,12 +870,12 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(paddingValues)
-                        .background(DarkBackground)
+                        .background(MaterialTheme.colorScheme.background)
                 ) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .background(DarkSurface)
+                            .background(DarkSurfaceRaised)
                             .padding(vertical = 8.dp),
                         horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally)
                     ) {
@@ -872,15 +884,15 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                             Box(
                                 modifier = Modifier
                                     .clip(RoundedCornerShape(16.dp))
-                                    .background(if (currentAgent == agent) PrimaryIndigo else DarkBackground)
+                                    .background(if (currentAgent == agent) PrimarySoft else DarkSurfaceField)
                                     .clickable { currentAgent = agent }
                                     .padding(horizontal = 14.dp, vertical = 6.dp)
                             ) {
                                 Text(
                                     text = agent.replaceFirstChar { it.uppercase() },
-                                    color = if (currentAgent == agent) Color.White else TextMuted,
+                                    color = if (currentAgent == agent) PrimaryIndigo else TextMuted,
                                     fontSize = 12.sp,
-                                    fontWeight = FontWeight.Bold
+                                    fontWeight = FontWeight.SemiBold
                                 )
                             }
                         }
@@ -898,7 +910,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                             Box(
                                 modifier = Modifier
                                     .size(90.dp)
-                                    .background(PrimaryIndigo.copy(alpha = 0.15f), shape = RoundedCornerShape(24.dp)),
+                                    .background(PrimarySoft, shape = RoundedCornerShape(20.dp)),
                                 contentAlignment = Alignment.Center
                             ) {
                                 Icon(
@@ -913,7 +925,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                             
                             Text(
                                 text = "Space Invaders Quiz",
-                                color = Color.White,
+                                color = TextLight,
                                 fontSize = 24.sp,
                                 fontWeight = FontWeight.Bold
                             )
@@ -944,21 +956,24 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                                 if (isInputReady) {
                                     Button(
                                         onClick = { launchQuizAction() },
-                                        colors = ButtonDefaults.buttonColors(containerColor = PrimaryIndigo),
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = PrimaryIndigo,
+                                            contentColor = MaterialTheme.colorScheme.onPrimary
+                                        ),
                                         shape = RoundedCornerShape(14.dp),
                                         modifier = Modifier
                                             .fillMaxWidth()
                                             .height(56.dp)
                                     ) {
-                                        Icon(Icons.Default.PlayArrow, contentDescription = "Play Icon", tint = Color.White)
+                                        Icon(Icons.Default.PlayArrow, contentDescription = "Play Icon")
                                         Spacer(modifier = Modifier.width(8.dp))
-                                        Text("LAUNCH QUIZ GAME", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                                        Text("LAUNCH QUIZ GAME", fontWeight = FontWeight.Bold, fontSize = 16.sp)
                                     }
                                 } else {
                                     Box(
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .background(DarkSurface, shape = RoundedCornerShape(12.dp))
+                                            .background(DarkSurfaceCard, shape = RoundedCornerShape(12.dp))
                                             .padding(16.dp),
                                         contentAlignment = Alignment.Center
                                     ) {
@@ -978,10 +993,10 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .padding(horizontal = 16.dp, vertical = 8.dp)
-                                    .background(DarkSurface, shape = RoundedCornerShape(12.dp))
+                                    .background(DarkSurfaceCard, shape = RoundedCornerShape(12.dp))
                                     .border(
                                         1.dp,
-                                        if (isCalendarConnected) Color(0xFF10B981).copy(alpha = 0.5f) else Color(0xFFFFB300).copy(alpha = 0.5f),
+                                        if (isCalendarConnected) AccentEmerald.copy(alpha = 0.45f) else AccentWarning.copy(alpha = 0.45f),
                                         shape = RoundedCornerShape(12.dp)
                                     )
                                     .padding(12.dp)
@@ -996,12 +1011,12 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                                             modifier = Modifier
                                                 .size(8.dp)
                                                 .clip(CircleShape)
-                                                .background(if (isCalendarConnected) Color(0xFF10B981) else Color(0xFFFFB300))
+                                                .background(if (isCalendarConnected) AccentEmerald else AccentWarning)
                                         )
                                         Spacer(modifier = Modifier.width(6.dp))
                                         Text(
                                             text = if (isCalendarConnected) "Google Calendar Linked" else "Google Calendar Not Connected",
-                                            color = Color.White,
+                                            color = TextLight,
                                             fontSize = 12.sp,
                                             fontWeight = FontWeight.Bold
                                         )
@@ -1009,7 +1024,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                                     if (!isCalendarConnected) {
                                         Text(
                                             text = "LINK",
-                                            color = Color(0xFFFFB300),
+                                            color = AccentWarning,
                                             fontSize = 12.sp,
                                             fontWeight = FontWeight.Bold,
                                             modifier = Modifier
@@ -1033,7 +1048,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                                     Box(
                                         modifier = Modifier
                                             .weight(1f)
-                                            .background(Color.Black.copy(alpha = 0.2f), shape = RoundedCornerShape(8.dp))
+                                            .background(DarkSurfaceField, shape = RoundedCornerShape(8.dp))
                                             .clickable {
                                                 showDatePicker(context) { date -> plannerStartDate = date }
                                             }
@@ -1045,7 +1060,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                                             Spacer(modifier = Modifier.height(2.dp))
                                             Text(
                                                 text = plannerStartDate,
-                                                color = Color.White,
+                                                color = TextLight,
                                                 fontSize = 12.sp,
                                                 fontWeight = FontWeight.SemiBold
                                             )
@@ -1055,7 +1070,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                                     Box(
                                         modifier = Modifier
                                             .weight(1f)
-                                            .background(Color.Black.copy(alpha = 0.2f), shape = RoundedCornerShape(8.dp))
+                                            .background(DarkSurfaceField, shape = RoundedCornerShape(8.dp))
                                             .clickable {
                                                 showDatePicker(context) { date -> plannerEndDate = date }
                                             }
@@ -1067,7 +1082,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                                             Spacer(modifier = Modifier.height(2.dp))
                                             Text(
                                                 text = plannerEndDate,
-                                                color = Color.White,
+                                                color = TextLight,
                                                 fontSize = 12.sp,
                                                 fontWeight = FontWeight.SemiBold
                                             )
@@ -1126,9 +1141,9 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                             bottomEnd = if (isUser) 4.dp else 16.dp
                         )
                     )
-                    .background(if (isUser) PrimaryIndigo else DarkSurface)
-                    .padding(12.dp)
-                    .widthIn(max = 280.dp)
+                    .background(if (isUser) PrimarySoft else DarkSurfaceCard)
+                    .padding(horizontal = 14.dp, vertical = 12.dp)
+                    .widthIn(max = 300.dp)
             ) {
                 Column {
                     if (message.bitmap != null) {
@@ -1152,24 +1167,27 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
 
                     Text(
                         text = cleanedText,
-                        color = TextLight,
-                        fontSize = 14.sp
+                        color = if (isUser) Color(0xFFEADAB3) else TextLight,
+                        fontSize = 14.sp,
+                        lineHeight = 21.sp
                     )
 
                     if (hasConnectButton) {
                         Spacer(modifier = Modifier.height(8.dp))
                         Button(
                             onClick = { onConnectCalendar() },
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFFB300)),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = AccentWarning,
+                                contentColor = Color(0xFF2B2110)
+                            ),
                             shape = RoundedCornerShape(8.dp),
                             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Text(
                                 text = "Connect Google Calendar",
-                                color = Color.Black,
                                 fontSize = 12.sp,
-                                fontWeight = FontWeight.Bold
+                                fontWeight = FontWeight.SemiBold
                             )
                         }
                     }
@@ -1547,8 +1565,8 @@ fun GameScreen(
     var isWon by remember { mutableStateOf(false) }
 
     if (questions.isEmpty()) {
-        Box(modifier = Modifier.fillMaxSize().background(Color(0xFF0F172A)), contentAlignment = Alignment.Center) {
-            Text("No questions loaded", color = Color.White)
+        Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background), contentAlignment = Alignment.Center) {
+            Text("No questions loaded", color = TextLight)
         }
         return
     }
@@ -1664,7 +1682,7 @@ fun GameScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(0xFF0F172A))
+            .background(MaterialTheme.colorScheme.background)
             .padding(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
@@ -1675,10 +1693,10 @@ fun GameScreen(
             verticalAlignment = Alignment.CenterVertically
         ) {
             IconButton(onClick = onBackToChat) {
-                Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = Color.White)
+                Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = TextLight)
             }
-            Text("Score: $score", color = Color(0xFF6366F1), fontSize = 16.sp, fontWeight = FontWeight.Bold)
-            Text("Lives: " + "❤️".repeat(lives), color = Color.Red, fontSize = 14.sp)
+            Text("Score: $score", color = PrimaryIndigo, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+            Text("Lives: " + "❤️".repeat(lives), color = AccentError, fontSize = 14.sp)
         }
 
         Spacer(modifier = Modifier.height(8.dp))
@@ -1693,18 +1711,21 @@ fun GameScreen(
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(
                         text = if (isWon) "🏆 VICTORY!" else "💥 GAME OVER",
-                        color = if (isWon) Color(0xFF06B6D4) else Color.Red,
+                        color = if (isWon) SecondaryCyan else AccentError,
                         fontSize = 28.sp,
                         fontWeight = FontWeight.Bold
                     )
                     Spacer(modifier = Modifier.height(8.dp))
-                    Text("Final Score: $score", color = Color.White, fontSize = 18.sp)
+                    Text("Final Score: $score", color = TextLight, fontSize = 18.sp)
                     Spacer(modifier = Modifier.height(16.dp))
                     Button(
                         onClick = onPlayAgain,
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF6366F1))
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = PrimaryIndigo,
+                            contentColor = MaterialTheme.colorScheme.onPrimary
+                        )
                     ) {
-                        Text("Play Again", color = Color.White)
+                        Text("Play Again")
                     }
                 }
             }
@@ -1712,7 +1733,7 @@ fun GameScreen(
             // Display Question
             Text(
                 text = "Q${currentQuestionIdx + 1}/${questions.size}: ${currentQuestion.question}",
-                color = Color.White,
+                color = TextLight,
                 fontSize = 16.sp,
                 fontWeight = FontWeight.SemiBold,
                 textAlign = TextAlign.Center,
@@ -1726,7 +1747,7 @@ fun GameScreen(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
-                    .background(Color(0xFF020617), shape = RoundedCornerShape(12.dp))
+                    .background(DarkSurfaceField, shape = RoundedCornerShape(12.dp))
                     .pointerInput(Unit) {
                         detectDragGestures { change, dragAmount ->
                             change.consume()
@@ -1751,7 +1772,7 @@ fun GameScreen(
                     // Draw Stars Background
                     for (i in 0 until 15) {
                         drawCircle(
-                            color = Color.White.copy(alpha = 0.3f),
+                            color = TextMuted.copy(alpha = 0.28f),
                             radius = 2f,
                             center = androidx.compose.ui.geometry.Offset((width * (i * 7 % 10) / 10f), (height * (i * 3 % 10) / 10f))
                         )
@@ -1760,7 +1781,7 @@ fun GameScreen(
                     // Draw Lasers
                     lasers.forEach { laser ->
                         drawRect(
-                            color = Color(0xFF06B6D4), // Cyan laser
+                            color = SecondaryCyan,
                             topLeft = androidx.compose.ui.geometry.Offset(laser.x - 2f, laser.y - 10f),
                             size = androidx.compose.ui.geometry.Size(4f, 20f)
                         )
@@ -1768,7 +1789,7 @@ fun GameScreen(
 
                     // Native paint for centering letter A, B, C, D in meteor circles
                     val textPaint = android.graphics.Paint().apply {
-                        color = android.graphics.Color.WHITE
+                        color = android.graphics.Color.rgb(242, 237, 227)
                         textSize = 36f
                         textAlign = android.graphics.Paint.Align.CENTER
                         isFakeBoldText = true
@@ -1778,7 +1799,7 @@ fun GameScreen(
                     meteors.forEach { meteor ->
                         // Draw outer circle
                         drawCircle(
-                            color = Color(0xFFF43F5E), // Reddish meteor
+                            color = AccentError,
                             radius = 30f,
                             center = androidx.compose.ui.geometry.Offset(meteor.x, meteor.y)
                         )
@@ -1800,7 +1821,7 @@ fun GameScreen(
                     }
                     drawPath(
                         path = shipPath,
-                        color = Color(0xFF6366F1) // Indigo ship
+                        color = PrimaryIndigo
                     )
                 }
 
@@ -1810,7 +1831,7 @@ fun GameScreen(
                         .align(Alignment.BottomEnd)
                         .padding(24.dp)
                         .size(70.dp)
-                        .background(Color(0xFFEF4444), shape = CircleShape)
+                        .background(AccentError, shape = CircleShape)
                         .clickable {
                             if (height > 0) {
                                 lasers.add(Laser(shipX, height - 120f))
@@ -1820,7 +1841,7 @@ fun GameScreen(
                 ) {
                     Text(
                         text = "FIRE",
-                        color = Color.White,
+                        color = Color(0xFF331613),
                         fontWeight = FontWeight.Black,
                         fontSize = 16.sp
                     )
@@ -1833,7 +1854,7 @@ fun GameScreen(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(Color(0xFF1E293B), shape = RoundedCornerShape(8.dp))
+                    .background(DarkSurfaceCard, shape = RoundedCornerShape(8.dp))
                     .padding(12.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
@@ -1846,7 +1867,7 @@ fun GameScreen(
                     }
                     Text(
                         text = "$letter: $option",
-                        color = Color.White,
+                        color = TextLight,
                         fontSize = 12.sp
                     )
                 }
