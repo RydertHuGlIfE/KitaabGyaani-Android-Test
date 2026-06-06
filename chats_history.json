@@ -22,5 +22,24 @@
     }
   ],
   "content": [],
-  "quiz": []
+  "quiz": [
+    {
+      "id": "54d79e3a-8500-484e-82b8-67f6429b69ce",
+      "title": "Quiz on: make a basic machine...",
+      "messages": [
+        {
+          "sender": "user",
+          "text": "Quiz on: make a basic machine learning quiz",
+          "image_base64": null,
+          "is_image": false
+        },
+        {
+          "sender": "agent",
+          "text": "Generated 20 quiz questions for the game!",
+          "image_base64": null,
+          "is_image": false
+        }
+      ]
+    }
+  ]
 }

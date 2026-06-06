@@ -73,6 +73,46 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.core.content.FileProvider
 import java.io.File
 import kotlinx.coroutines.delay
+import androidx.compose.animation.*
+import androidx.compose.animation.core.*
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.ui.composed
+import androidx.compose.ui.graphics.graphicsLayer
+
+fun Modifier.bounceClick(interactionSource: MutableInteractionSource) = composed {
+    val isPressed by interactionSource.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (isPressed) 0.96f else 1f,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioMediumBouncy,
+            stiffness = Spring.StiffnessLow
+        ),
+        label = "bounceScale"
+    )
+    this.graphicsLayer(scaleX = scale, scaleY = scale)
+}
+
+fun Modifier.bounceClickable(onClick: () -> Unit) = composed {
+    val interactionSource = remember { MutableInteractionSource() }
+    val isPressed by interactionSource.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (isPressed) 0.96f else 1f,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioMediumBouncy,
+            stiffness = Spring.StiffnessLow
+        ),
+        label = "bounceScale"
+    )
+    this
+        .graphicsLayer(scaleX = scale, scaleY = scale)
+        .clickable(
+            interactionSource = interactionSource,
+            indication = null
+        ) {
+            onClick()
+        }
+}
 
 class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
 
@@ -485,17 +525,24 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
         val scope = rememberCoroutineScope()
 
-        if (isPlayingGame) {
-            GameScreen(
-                questions = quizQuestions,
-                serverIp = serverIp,
-                onBackToChat = { isPlayingGame = false },
-                onPlayAgain = {
-                    isPlayingGame = false
-                    launchQuizAction()
-                }
-            )
-        } else {
+        AnimatedContent(
+            targetState = isPlayingGame,
+            transitionSpec = {
+                fadeIn(animationSpec = tween(300)) togetherWith fadeOut(animationSpec = tween(300))
+            },
+            label = "screen_transition"
+        ) { playing ->
+            if (playing) {
+                GameScreen(
+                    questions = quizQuestions,
+                    serverIp = serverIp,
+                    onBackToChat = { isPlayingGame = false },
+                    onPlayAgain = {
+                        isPlayingGame = false
+                        launchQuizAction()
+                    }
+                )
+            } else {
             ModalNavigationDrawer(
                 drawerState = drawerState,
             drawerContent = {
@@ -516,16 +563,20 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                             modifier = Modifier.padding(bottom = 16.dp)
                         )
                         
+                        val newChatInteraction = remember { MutableInteractionSource() }
                         Button(
                             onClick = {
                                 currentSessionIds[currentAgent] = null
                                 scope.launch { drawerState.close() }
                             },
+                            interactionSource = newChatInteraction,
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = PrimaryIndigo,
                                 contentColor = MaterialTheme.colorScheme.onPrimary
                             ),
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .bounceClick(newChatInteraction),
                             shape = RoundedCornerShape(12.dp)
                         ) {
                             Icon(Icons.Default.Add, contentDescription = "New Chat")
@@ -585,6 +636,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                         
                         Spacer(modifier = Modifier.height(16.dp))
                         
+                        val clearHistoryInteraction = remember { MutableInteractionSource() }
                         Button(
                             onClick = {
                                 makeHttpRequest(
@@ -606,8 +658,11 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                                 )
                                 scope.launch { drawerState.close() }
                             },
+                            interactionSource = clearHistoryInteraction,
                             colors = ButtonDefaults.buttonColors(containerColor = Color.Transparent),
-                            modifier = Modifier.fillMaxWidth()
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .bounceClick(clearHistoryInteraction)
                         ) {
                             Icon(Icons.Default.Delete, contentDescription = "Clear History", tint = AccentError)
                             Spacer(modifier = Modifier.width(8.dp))
@@ -765,6 +820,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
+                            val cameraInteraction = remember { MutableInteractionSource() }
                             IconButton(
                                 onClick = {
                                     val hasPermission = androidx.core.content.ContextCompat.checkSelfPermission(
@@ -776,11 +832,14 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                                         cameraPermissionLauncher.launch(android.Manifest.permission.CAMERA)
                                     }
                                 },
-                                colors = IconButtonDefaults.iconButtonColors(containerColor = DarkSurfaceField)
+                                interactionSource = cameraInteraction,
+                                colors = IconButtonDefaults.iconButtonColors(containerColor = DarkSurfaceField),
+                                modifier = Modifier.bounceClick(cameraInteraction)
                             ) {
                                 Icon(Icons.Default.Add, contentDescription = "Camera", tint = SecondaryCyan)
                             }
 
+                            val micInteraction = remember { MutableInteractionSource() }
                             IconButton(
                                 onClick = {
                                     val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
@@ -789,7 +848,9 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                                     }
                                     speechLauncher.launch(intent)
                                 },
-                                colors = IconButtonDefaults.iconButtonColors(containerColor = DarkSurfaceField)
+                                interactionSource = micInteraction,
+                                colors = IconButtonDefaults.iconButtonColors(containerColor = DarkSurfaceField),
+                                modifier = Modifier.bounceClick(micInteraction)
                             ) {
                                 Icon(Icons.Default.Mic, contentDescription = "Voice Input", tint = SecondaryCyan)
                             }
@@ -844,6 +905,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                                 modifier = Modifier.weight(1f)
                             )
 
+                             val sendInteraction = remember { MutableInteractionSource() }
                              IconButton(
                                 onClick = {
                                     if (inputText.isNotEmpty() || selectedFileBase64 != null) {
@@ -877,10 +939,12 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                                         }
                                     }
                                 },
+                                interactionSource = sendInteraction,
                                 colors = IconButtonDefaults.iconButtonColors(
                                     containerColor = PrimaryIndigo,
                                     contentColor = MaterialTheme.colorScheme.onPrimary
-                                )
+                                ),
+                                modifier = Modifier.bounceClick(sendInteraction)
                             ) {
                                 Icon(Icons.Default.Send, contentDescription = "Send")
                             }
@@ -894,28 +958,63 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                         .padding(paddingValues)
                         .background(MaterialTheme.colorScheme.background)
                 ) {
-                    Row(
+                    Box(
                         modifier = Modifier
                             .fillMaxWidth()
                             .background(DarkSurfaceRaised)
-                            .padding(vertical = 8.dp),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally)
+                            .padding(vertical = 8.dp, horizontal = 12.dp)
                     ) {
                         val agents = listOf("study", "planner", "expense", "content", "quiz")
-                        agents.forEach { agent ->
+                        val selectedIndex = agents.indexOf(currentAgent).coerceAtLeast(0)
+                        
+                        BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+                            val tabWidth = maxWidth / agents.size
+                            val indicatorOffset by animateDpAsState(
+                                targetValue = tabWidth * selectedIndex,
+                                animationSpec = spring(
+                                    dampingRatio = Spring.DampingRatioNoBouncy,
+                                    stiffness = Spring.StiffnessMediumLow
+                                ),
+                                label = "tabIndicatorOffset"
+                            )
+                            
                             Box(
                                 modifier = Modifier
-                                    .clip(RoundedCornerShape(16.dp))
-                                    .background(if (currentAgent == agent) PrimarySoft else DarkSurfaceField)
-                                    .clickable { currentAgent = agent }
-                                    .padding(horizontal = 14.dp, vertical = 6.dp)
+                                    .offset(x = indicatorOffset)
+                                    .width(tabWidth)
+                                    .height(32.dp)
+                                    .background(PrimarySoft, shape = RoundedCornerShape(8.dp))
+                            )
+                            
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text(
-                                    text = agent.replaceFirstChar { it.uppercase() },
-                                    color = if (currentAgent == agent) PrimaryIndigo else TextMuted,
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.SemiBold
-                                )
+                                agents.forEach { agent ->
+                                    val isSelected = currentAgent == agent
+                                    val textColor by animateColorAsState(
+                                        targetValue = if (isSelected) PrimaryIndigo else TextMuted,
+                                        animationSpec = tween(durationMillis = 200),
+                                        label = "tabTextColor"
+                                    )
+                                    
+                                    Box(
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .height(32.dp)
+                                            .bounceClickable {
+                                                currentAgent = agent
+                                            },
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text(
+                                            text = agent.replaceFirstChar { it.uppercase() },
+                                            color = textColor,
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
@@ -976,8 +1075,10 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                             } else {
                                 val isInputReady = inputText.trim().isNotEmpty() || selectedFileBase64 != null
                                 if (isInputReady) {
+                                    val launchQuizInteraction = remember { MutableInteractionSource() }
                                     Button(
                                         onClick = { launchQuizAction() },
+                                        interactionSource = launchQuizInteraction,
                                         colors = ButtonDefaults.buttonColors(
                                             containerColor = PrimaryIndigo,
                                             contentColor = MaterialTheme.colorScheme.onPrimary
@@ -986,6 +1087,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                                         modifier = Modifier
                                             .fillMaxWidth()
                                             .height(56.dp)
+                                            .bounceClick(launchQuizInteraction)
                                     ) {
                                         Icon(Icons.Default.PlayArrow, contentDescription = "Play Icon")
                                         Spacer(modifier = Modifier.width(8.dp))
@@ -1214,6 +1316,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         }
     }
 }
+}
 
     @Composable
     fun ChatBubble(
@@ -1222,8 +1325,31 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         onConnectCalendar: () -> Unit = {}
     ) {
         val isUser = message.sender == "user"
+        val animAlpha = remember { Animatable(0f) }
+        val animOffsetY = remember { Animatable(16f) }
+        
+        LaunchedEffect(message.id) {
+            launch {
+                animAlpha.animateTo(
+                    targetValue = 1f,
+                    animationSpec = tween(durationMillis = 300, easing = FastOutSlowInEasing)
+                )
+            }
+            launch {
+                animOffsetY.animateTo(
+                    targetValue = 0f,
+                    animationSpec = tween(durationMillis = 300, easing = FastOutSlowInEasing)
+                )
+            }
+        }
+
         Column(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .graphicsLayer(
+                    alpha = animAlpha.value,
+                    translationY = animOffsetY.value
+                ),
             horizontalAlignment = if (isUser) Alignment.End else Alignment.Start
         ) {
             Box(
@@ -1270,15 +1396,19 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
 
                     if (hasConnectButton) {
                         Spacer(modifier = Modifier.height(8.dp))
+                        val connectCalendarInteraction = remember { MutableInteractionSource() }
                         Button(
                             onClick = { onConnectCalendar() },
+                            interactionSource = connectCalendarInteraction,
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = AccentWarning,
                                 contentColor = Color(0xFF2B2110)
                             ),
                             shape = RoundedCornerShape(8.dp),
                             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                            modifier = Modifier.fillMaxWidth()
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .bounceClick(connectCalendarInteraction)
                         ) {
                             Text(
                                 text = "Connect Google Calendar",
@@ -1730,6 +1860,7 @@ fun GameScreen(
     // Lists of game objects
     val lasers = remember { mutableStateListOf<Laser>() }
     val meteors = remember { mutableStateListOf<Meteor>() }
+    var starOffset by remember { mutableStateOf(0f) }
 
     // Initialize meteors when question changes
     LaunchedEffect(currentQuestionIdx, width) {
@@ -1761,6 +1892,7 @@ fun GameScreen(
     LaunchedEffect(isOver, isWon, currentQuestionIdx, width, height) {
         while (!isOver && !isWon) {
             delay(16L) // ~60fps
+            starOffset = (starOffset + 1.2f) % 2000f
 
             // 2. Move lasers up (thread-safe copy updates) - reduced speed to 8f
             val updatedLasers = lasers.map { it.copy(y = it.y - 8f) }.filter { it.y >= 0 }
@@ -1865,12 +1997,15 @@ fun GameScreen(
                     Spacer(modifier = Modifier.height(8.dp))
                     Text("Final Score: $score", color = TextLight, fontSize = 18.sp)
                     Spacer(modifier = Modifier.height(16.dp))
+                    val playAgainInteraction = remember { MutableInteractionSource() }
                     Button(
                         onClick = onPlayAgain,
+                        interactionSource = playAgainInteraction,
                         colors = ButtonDefaults.buttonColors(
                             containerColor = PrimaryIndigo,
                             contentColor = MaterialTheme.colorScheme.onPrimary
-                        )
+                        ),
+                        modifier = Modifier.bounceClick(playAgainInteraction)
                     ) {
                         Text("Play Again")
                     }
@@ -1916,12 +2051,14 @@ fun GameScreen(
                         height = it.size.height.toFloat()
                         if (shipX == 0f) shipX = width / 2f
                     }) {
-                    // Draw Stars Background
-                    for (i in 0 until 15) {
+                    // Draw Scrolling Stars Background (Parallax Effect)
+                    for (i in 0 until 24) {
+                        val speed = if (i % 2 == 0) 1.5f else 0.8f
+                        val starY = ((height * (i * 3 % 10) / 10f) + starOffset * speed) % height
                         drawCircle(
-                            color = TextMuted.copy(alpha = 0.28f),
-                            radius = 2f,
-                            center = androidx.compose.ui.geometry.Offset((width * (i * 7 % 10) / 10f), (height * (i * 3 % 10) / 10f))
+                            color = TextMuted.copy(alpha = if (i % 2 == 0) 0.45f else 0.25f),
+                            radius = if (i % 2 == 0) 2.5f else 1.5f,
+                            center = androidx.compose.ui.geometry.Offset((width * (i * 7 % 10) / 10f), starY)
                         )
                     }
 
@@ -1942,15 +2079,42 @@ fun GameScreen(
                         isFakeBoldText = true
                     }
 
-                    // Draw Meteors (Alien targets labeled A, B, C, D)
+                    // Draw Meteors (Detailed retro vector asteroids)
                     meteors.forEach { meteor ->
-                        // Draw outer circle
+                        // Draw solid filled inner body
                         drawCircle(
-                            color = AccentError,
-                            radius = 30f,
+                            color = DarkSurfaceCard,
+                            radius = 32f,
                             center = androidx.compose.ui.geometry.Offset(meteor.x, meteor.y)
                         )
-                        // Draw centered option letter directly on canvas (no layout offset drift!)
+                        // Outer concentric rim
+                        drawCircle(
+                            color = AccentError,
+                            radius = 32f,
+                            center = androidx.compose.ui.geometry.Offset(meteor.x, meteor.y),
+                            style = androidx.compose.ui.graphics.drawscope.Stroke(width = 3f)
+                        )
+                        // Inner ring outline
+                        drawCircle(
+                            color = AccentError.copy(alpha = 0.5f),
+                            radius = 26f,
+                            center = androidx.compose.ui.geometry.Offset(meteor.x, meteor.y),
+                            style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.5f)
+                        )
+                        // Asteroid surface craters
+                        drawCircle(
+                            color = AccentError.copy(alpha = 0.4f),
+                            radius = 6f,
+                            center = androidx.compose.ui.geometry.Offset(meteor.x - 12f, meteor.y - 8f),
+                            style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.5f)
+                        )
+                        drawCircle(
+                            color = AccentError.copy(alpha = 0.4f),
+                            radius = 4f,
+                            center = androidx.compose.ui.geometry.Offset(meteor.x + 10f, meteor.y + 10f),
+                            style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.5f)
+                        )
+                        // Draw centered option letter directly on canvas
                         drawContext.canvas.nativeCanvas.drawText(
                             meteor.text,
                             meteor.x,
@@ -1959,16 +2123,29 @@ fun GameScreen(
                         )
                     }
 
-                    // Draw Player Ship (Indigo triangle/space craft)
+                    // Draw Player Ship (Sleek vector space craft)
                     val shipPath = androidx.compose.ui.graphics.Path().apply {
                         moveTo(shipX, height - 120f)
-                        lineTo(shipX - 30f, height - 70f)
-                        lineTo(shipX + 30f, height - 70f)
+                        lineTo(shipX - 24f, height - 75f)
+                        lineTo(shipX - 12f, height - 82f)
+                        lineTo(shipX + 12f, height - 82f)
+                        lineTo(shipX + 24f, height - 75f)
                         close()
                     }
                     drawPath(
                         path = shipPath,
                         color = PrimaryIndigo
+                    )
+                    // Flickering thruster flame
+                    val flamePath = androidx.compose.ui.graphics.Path().apply {
+                        moveTo(shipX - 8f, height - 74f)
+                        lineTo(shipX, height - 56f - (Math.random() * 8).toFloat())
+                        lineTo(shipX + 8f, height - 74f)
+                        close()
+                    }
+                    drawPath(
+                        path = flamePath,
+                        color = AccentWarning
                     )
                 }
 
@@ -1979,7 +2156,7 @@ fun GameScreen(
                         .padding(24.dp)
                         .size(70.dp)
                         .background(AccentError, shape = CircleShape)
-                        .clickable {
+                        .bounceClickable {
                             if (height > 0) {
                                 lasers.add(Laser(shipX, height - 120f))
                             }
