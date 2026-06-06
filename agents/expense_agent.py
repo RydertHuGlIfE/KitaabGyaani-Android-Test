@@ -1,6 +1,7 @@
 import json
 from groq import Groq
 from config import Config
+from services.llm_service import PLAIN_RESPONSE_INSTRUCTION, sanitize_user_response
 
 class ExpenseAgent:
     def __init__(self):
@@ -11,7 +12,8 @@ class ExpenseAgent:
 
         prompt = (
             f"Analyze this receipt image. It may contain handwritten text or notes. Perform OCR, read the items and totals, and extract the details.\n"
-            f"Provide a clear human-readable summary of the expense, including total amount, merchant, date, and category.\n"
+            f"Provide a concise plain text summary with total amount, merchant, date, and category.\n"
+            f"{PLAIN_RESPONSE_INSTRUCTION}\n"
             f"User additional instruction: {prompt_text or 'None'}"
         )
 
@@ -33,6 +35,6 @@ class ExpenseAgent:
             ]
         )
 
-        response_text = response.choices[0].message.content
+        response_text = sanitize_user_response(response.choices[0].message.content)
         print(f"[ExpenseAgent] LLM Response: {response_text}")
         return {"response": response_text, "amount": 0.0, "category": "Others", "merchant": "Unknown", "date": "", "confidence": 0.0}

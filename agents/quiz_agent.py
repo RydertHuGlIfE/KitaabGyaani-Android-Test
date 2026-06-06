@@ -48,7 +48,7 @@ class QuizAgent:
             "Output valid JSON only. Do not include introductory or concluding remarks."
         )
 
-        response_text = await self.llm.query_llm(prompt, system_prompt=system_prompt)
+        response_text = await self.llm.query_llm(prompt, system_prompt=system_prompt, plain_text=False)
         
         # Parse the JSON response
         try:

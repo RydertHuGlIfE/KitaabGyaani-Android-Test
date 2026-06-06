@@ -18,13 +18,20 @@ def normalize_timezone_name(tz_name: Optional[str]) -> str:
     if not tz_name:
         return 'UTC'
 
-    cleaned = tz_name.strip().replace(' ', '')
+    cleaned = tz_name.strip().replace(' ', '').replace('_', '').replace('-', '')
     lowered = cleaned.lower()
 
     aliases = {
         'asiankolkata': 'Asia/Kolkata',
+        'asiakolkatta': 'Asia/Kolkata',
         'asia/calcutta': 'Asia/Kolkata',
         'asia/kolkata': 'Asia/Kolkata',
+        'asia/kolkatta': 'Asia/Kolkata',
+        'asiacalcutta': 'Asia/Kolkata',
+        'asiakolkata': 'Asia/Kolkata',
+        'kolkata': 'Asia/Kolkata',
+        'kolkatta': 'Asia/Kolkata',
+        'calcutta': 'Asia/Kolkata',
         'ist': 'Asia/Kolkata',
         'utc': 'UTC',
         'gmt': 'UTC',
@@ -33,7 +40,13 @@ def normalize_timezone_name(tz_name: Optional[str]) -> str:
     if lowered in aliases:
         return aliases[lowered]
 
-    return tz_name
+    candidate = tz_name.strip()
+    try:
+        ZoneInfo(candidate)
+        return candidate
+    except Exception:
+        print(f"Unknown timezone '{tz_name}', falling back to Asia/Kolkata")
+        return 'Asia/Kolkata'
 
 def get_credentials() -> Optional[Credentials]:
     if os.path.exists(TOKEN_FILE):
@@ -189,6 +202,7 @@ def find_free_study_slots(
     busy_intervals: List[Tuple[datetime, datetime]],
     tz_str: str
 ) -> List[Tuple[datetime, datetime]]:
+    tz_str = normalize_timezone_name(tz_str)
     tz = ZoneInfo(tz_str)
     scheduled_slots = []
     current_date = start_date
@@ -269,9 +283,10 @@ def find_free_study_slots(
         
     return scheduled_slots
 
-def insert_study_sessions(service, topic: str, slots: List[Tuple[datetime, datetime]], calendar_id='primary') -> List[dict]:
+def insert_study_sessions(service, topic: str, slots: List[Tuple[datetime, datetime]], calendar_id='primary', tz_str: str = 'UTC') -> List[dict]:
     created_events = []
     total_slots = len(slots)
+    tz_str = normalize_timezone_name(tz_str)
     
     for i, (s_dt, e_dt) in enumerate(slots, 1):
         summary = f"Study Session: {topic} ({i}/{total_slots})"
@@ -282,9 +297,11 @@ def insert_study_sessions(service, topic: str, slots: List[Tuple[datetime, datet
             'description': description,
             'start': {
                 'dateTime': s_dt.isoformat(),
+                'timeZone': tz_str,
             },
             'end': {
                 'dateTime': e_dt.isoformat(),
+                'timeZone': tz_str,
             },
             'reminders': {
                 'useDefault': True,
@@ -299,3 +316,101 @@ def insert_study_sessions(service, topic: str, slots: List[Tuple[datetime, datet
             print(f"Error inserting event {summary}: {e}")
             
     return created_events
+
+
+def fetch_all_calendars_busy_intervals(service, start_dt: datetime, end_dt: datetime) -> List[dict]:
+    busy_intervals = []
+    try:
+        calendars_result = service.calendarList().list().execute()
+        calendars = calendars_result.get('items', [])
+        
+        for cal in calendars:
+            cal_id = cal.get('id')
+            if not cal_id:
+                continue
+            
+            try:
+                events_result = service.events().list(
+                    calendarId=cal_id,
+                    timeMin=start_dt.isoformat(),
+                    timeMax=end_dt.isoformat(),
+                    singleEvents=True,
+                    orderBy='startTime'
+                ).execute()
+                
+                events = events_result.get('items', [])
+                for event in events:
+                    if event.get('transparency') == 'transparent':
+                        continue
+                        
+                    start_str = event['start'].get('dateTime') or event['start'].get('date')
+                    end_str = event['end'].get('dateTime') or event['end'].get('date')
+                    
+                    if not start_str or not end_str:
+                        continue
+                        
+                    if 'date' in event['start'] and 'dateTime' not in event['start']:
+                        s_date = date.fromisoformat(start_str)
+                        e_date = date.fromisoformat(end_str)
+                        s_dt = datetime.combine(s_date, time.min)
+                        e_dt = datetime.combine(e_date, time.min)
+                    else:
+                        s_dt = datetime.fromisoformat(start_str.replace('Z', '+00:00'))
+                        e_dt = datetime.fromisoformat(end_str.replace('Z', '+00:00'))
+                    
+                    busy_intervals.append({
+                        "start": s_dt,
+                        "end": e_dt,
+                        "summary": event.get("summary", "Busy"),
+                        "calendar_summary": cal.get("summary", "Calendar")
+                    })
+            except Exception as e:
+                print(f"Error fetching events for calendar {cal_id}: {e}")
+                
+        busy_intervals.sort(key=lambda x: x["start"])
+    except Exception as e:
+        print(f"Error fetching busy intervals from calendars: {e}")
+    return busy_intervals
+
+
+def delete_study_sessions(service, calendar_id='primary') -> int:
+    deleted_count = 0
+    now = datetime.utcnow()
+    # Query from 30 days in the past to 180 days in the future
+    time_min = (now - timedelta(days=30)).isoformat() + 'Z'
+    time_max = (now + timedelta(days=180)).isoformat() + 'Z'
+    
+    page_token = None
+    while True:
+        try:
+            events_result = service.events().list(
+                calendarId=calendar_id,
+                timeMin=time_min,
+                timeMax=time_max,
+                q="Study Session",
+                singleEvents=True,
+                pageToken=page_token
+            ).execute()
+        except Exception as e:
+            print(f"Error listing events for deletion: {e}")
+            break
+            
+        events = events_result.get('items', [])
+        for event in events:
+            summary = event.get('summary', '')
+            # Ensure the event matches the app's summary signature
+            if summary.startswith("Study Session:"):
+                event_id = event.get('id')
+                if event_id:
+                    try:
+                        service.events().delete(calendarId=calendar_id, eventId=event_id).execute()
+                        deleted_count += 1
+                    except Exception as e:
+                        print(f"Error deleting event {event_id}: {e}")
+                        
+        page_token = events_result.get('nextPageToken')
+        if not page_token:
+            break
+            
+    return deleted_count
+

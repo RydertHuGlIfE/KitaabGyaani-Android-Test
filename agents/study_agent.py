@@ -37,7 +37,7 @@ class StudyAgent:
             "- Only answer educational, academic, or study-related queries.\n"
             "- Do not process, generate, or discuss any inappropriate, sexual, adult, adulterous, violent, or unsafe content.\n"
             "- If a query is off-topic or inappropriate, politely decline by stating that you are an academic assistant.\n"
-            "Respond freely in clear, structured markdown. Do not restrict your output format to JSON. Keep your response engaging, accurate, and easy to read.\n"
+            "Answer briefly in plain text. No markdown, emojis, bullets, or special characters. Prefer 3 to 6 short lines.\n"
             "If conversation history is provided, use it to maintain context and refer back to previous discussed topics if relevant."
         )
 
@@ -58,13 +58,13 @@ class StudyAgent:
             # Free-form study kit flow
             if is_pdf:
                 text = self.pdf.extract_text(content)
-                prompt = f"Analyze the following study document and provide a comprehensive summary, explanation, and study guide:\n\n{text}"
+                prompt = f"Analyze the following study document. Give only the key summary and next study steps:\n\n{text}"
                 response_text = await self.llm.query_llm(prompt, system_prompt=system_prompt)
             elif is_image:
-                prompt = "Analyze this study material image and provide a comprehensive summary, explanation, and study guide."
+                prompt = "Analyze this study material image. Give only the key summary and next study steps."
                 response_text = await self.llm.query_vision_llm(cleaned_content, prompt, system_prompt=system_prompt)
             else:
-                prompt = f"Analyze the following study notes and provide a comprehensive summary, explanation, and study guide:\n\n{text}"
+                prompt = f"Analyze the following study notes. Give only the key summary and next study steps:\n\n{text}"
                 response_text = await self.llm.query_llm(prompt, system_prompt=system_prompt)
             
         return {"response": response_text, "summary": response_text, "flashcards": [], "mcqs": []}

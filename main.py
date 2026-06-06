@@ -11,7 +11,7 @@ from typing import List, Optional
 from dotenv import load_dotenv
 
 from config import Config
-from services.llm_service import LLMService
+from services.llm_service import LLMService, sanitize_user_response
 from services.ocr_service import OCRService
 from services.pdf_service import PDFService
 from agents.study_agent import StudyAgent
@@ -64,7 +64,7 @@ def load_chat_history():
             with open(HISTORY_FILE, "r") as f:
                 data = json.load(f)
                 migrated = {}
-                for agent in ["study", "planner", "expense", "content"]:
+                for agent in ["study", "planner", "expense", "content", "quiz"]:
                     agent_data = data.get(agent, [])
                     # Check if legacy format (direct list of message dicts)
                     if agent_data and isinstance(agent_data, list) and isinstance(agent_data[0], dict) and "sender" in agent_data[0]:
@@ -135,9 +135,9 @@ def update_session_title_and_append(agent: str, session_id: Optional[str], user_
 def format_agent_response(agent: str, data: dict) -> str:
     try:
         if isinstance(data, str):
-            return data
+            return sanitize_user_response(data)
         if isinstance(data, dict) and "response" in data:
-            return data["response"]
+            return sanitize_user_response(data["response"])
             
         if agent == "study":
             summary = data.get("summary", "")
@@ -153,7 +153,7 @@ def format_agent_response(agent: str, data: dict) -> str:
                     opts = m.get("options") or []
                     options_str = ", ".join(opts) if isinstance(opts, list) else str(opts)
                     out += f"• {m.get('q', '')}\n  Options: {options_str}\n  Answer: {m.get('answer', '')}\n"
-            return out
+            return sanitize_user_response(out)
         elif agent == "planner":
             exam_name = data.get("exam_name", "")
             exam_date = data.get("exam_date", "")
@@ -172,7 +172,7 @@ def format_agent_response(agent: str, data: dict) -> str:
                 for m in milestones:
                     if isinstance(m, dict):
                         out += f"• Day {m.get('day', '')}: {m.get('milestone', '')}\n"
-            return out
+            return sanitize_user_response(out)
         elif agent == "expense":
             amount = data.get("amount", 0.0)
             merchant = data.get("merchant", "Unknown")
@@ -187,7 +187,7 @@ def format_agent_response(agent: str, data: dict) -> str:
             return f"📝 DRAFTED TEXT:\n\n{draft_text}\n\n💡 Suggestions:\n{s_str}"
     except Exception as e:
         print(f"Formatting error: {e}")
-    return str(data)
+    return sanitize_user_response(str(data))
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -620,7 +620,7 @@ async def process_planner(req: PlannerRequest):
             content=req.content, is_image=req.is_image, start_date=req.start_date
         )
         formatted_resp = format_agent_response("planner", result)
-        user_msg = f"Plan Schedule for {req.exam_name}"
+        user_msg = f"Plan Schedule: {', '.join(req.syllabus)}" if req.syllabus else f"Plan Schedule for {req.exam_name}"
         
         user_msg_dict = {
             "sender": "user",
@@ -798,6 +798,20 @@ async def calendar_status():
         return {"connected": True}
     return {"connected": False}
 
+@app.post("/api/calendar/clear-events")
+async def clear_calendar_events():
+    load_dotenv(override=True)
+    creds = get_credentials()
+    if not creds or not creds.valid:
+        raise HTTPException(status_code=401, detail="Google Calendar not connected")
+    try:
+        from services.planner_service import get_calendar_service, delete_study_sessions
+        service = get_calendar_service(creds)
+        deleted_count = delete_study_sessions(service)
+        return {"status": "success", "deleted_count": deleted_count}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to clear events: {str(e)}")
+
 @app.post("/api/calendar/configure")
 async def configure_calendar(config: ConfigSchema):
     try:
@@ -889,7 +903,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         start_date=payload.get("start_date")
                     )
                     formatted_resp = format_agent_response("planner", result)
-                    user_msg = f"Plan Schedule for {payload.get('exam_name', '')}"
+                    user_msg = f"Plan Schedule: {', '.join(payload.get('syllabus', []))}" if payload.get('syllabus') else f"Plan Schedule for {payload.get('exam_name', '')}"
                     
                     user_msg_dict = {
                         "sender": "user",

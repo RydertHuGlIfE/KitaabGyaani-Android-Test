@@ -64,6 +64,12 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.util.*
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.font.FontFamily
 import androidx.core.content.FileProvider
 import java.io.File
 import kotlinx.coroutines.delay
@@ -153,6 +159,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         var plannerStartDate by remember { mutableStateOf(defaultStartStr) }
         var plannerEndDate by remember { mutableStateOf(defaultEndStr) }
         var isCalendarConnected by remember { mutableStateOf(false) }
+        var isClearingEvents by remember { mutableStateOf(false) }
 
         fun showDatePicker(ctx: Context, onDateSelected: (String) -> Unit) {
             val cal = Calendar.getInstance()
@@ -178,6 +185,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
 
         var isPlayingGame by remember { mutableStateOf(false) }
         var quizQuestions by remember { mutableStateOf<List<GameQuestion>>(emptyList()) }
+        var isAgentLoading by remember { mutableStateOf(false) }
 
         val chatSessions = remember {
             mutableStateMapOf<String, List<ChatSession>>().apply {
@@ -305,16 +313,23 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             object : WebSocketClient.WebSocketListenerInterface {
                 override fun onConnected() {
                     isConnected = true
-                    runOnUiThread { Toast.makeText(context, "Connected to KitaabGyaani Server", Toast.LENGTH_SHORT).show() }
+                    runOnUiThread { 
+                        Toast.makeText(context, "Connected to KitaabGyaani Server", Toast.LENGTH_SHORT).show() 
+                        fetchHistory(serverIp)
+                    }
                 }
 
                 override fun onDisconnected() {
                     isConnected = false
-                    runOnUiThread { Toast.makeText(context, "Disconnected from Server", Toast.LENGTH_SHORT).show() }
+                    runOnUiThread { 
+                        isAgentLoading = false
+                        Toast.makeText(context, "Disconnected from Server", Toast.LENGTH_SHORT).show() 
+                    }
                 }
 
                 override fun onMessageReceived(text: String) {
                     runOnUiThread {
+                        isAgentLoading = false
                         try {
                             val wsResponseMap = gson.fromJson<Map<String, Any?>>(text, object : com.google.gson.reflect.TypeToken<Map<String, Any?>>() {}.type)
                             val agentName = (wsResponseMap["agent"] as? String) ?: currentAgent
@@ -332,12 +347,16 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
 
                 override fun onError(error: String) {
                     isConnected = false
-                    runOnUiThread { Toast.makeText(context, "WS Error: $error", Toast.LENGTH_SHORT).show() }
+                    runOnUiThread { 
+                        isAgentLoading = false
+                        Toast.makeText(context, "WS Error: $error", Toast.LENGTH_SHORT).show() 
+                    }
                 }
             }
         }
 
         LaunchedEffect(serverIp) {
+            fetchHistory(serverIp)
             while (true) {
                 if (!isConnected) {
                     webSocketClient?.disconnect()
@@ -347,7 +366,6 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                     } catch (e: Exception) {
                         isConnected = false
                     }
-                    fetchHistory(serverIp)
                 }
                 delay(5000)
             }
@@ -422,7 +440,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                 val tempFile = File.createTempFile("camera_photo_", ".jpg", storageDir)
                 val uri = FileProvider.getUriForFile(
                     context,
-                    "com.kitaabgyaani.app.fileprovider",
+                    context.packageName + ".fileprovider",
                     tempFile
                 )
                 cameraPhotoUri = uri
@@ -806,7 +824,9 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                                                 },
                                                 onResponseReceived = {
                                                     fetchHistory(serverIp)
-                                                }
+                                                },
+                                                onStartLoading = { isAgentLoading = true },
+                                                onEndLoading = { isAgentLoading = false }
                                             )
                                             inputText = ""
                                         }
@@ -849,7 +869,9 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                                                 },
                                                 onResponseReceived = {
                                                     fetchHistory(serverIp)
-                                                }
+                                                },
+                                                onStartLoading = { isAgentLoading = true },
+                                                onEndLoading = { isAgentLoading = false }
                                             )
                                             inputText = ""
                                         }
@@ -1036,6 +1058,48 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                                                 }
                                                 .padding(horizontal = 6.dp, vertical = 2.dp)
                                         )
+                                    } else {
+                                        if (isClearingEvents) {
+                                            CircularProgressIndicator(
+                                                color = AccentError,
+                                                modifier = Modifier.size(16.dp),
+                                                strokeWidth = 2.dp
+                                            )
+                                        } else {
+                                            Text(
+                                                text = "CLEAR EVENTS",
+                                                color = AccentError,
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                modifier = Modifier
+                                                    .clickable {
+                                                        isClearingEvents = true
+                                                        makeHttpRequest(
+                                                            url = "http://$serverIp:8000/api/calendar/clear-events",
+                                                            bodyJson = "{}",
+                                                            onSuccess = { res ->
+                                                                (context as? Activity)?.runOnUiThread {
+                                                                    isClearingEvents = false
+                                                                    try {
+                                                                        val responseMap = gson.fromJson<Map<String, Any?>>(res, object : com.google.gson.reflect.TypeToken<Map<String, Any?>>() {}.type)
+                                                                        val deletedCount = (responseMap["deleted_count"] as? Number)?.toInt() ?: 0
+                                                                        Toast.makeText(context, "Cleared $deletedCount study events!", Toast.LENGTH_LONG).show()
+                                                                    } catch (e: Exception) {
+                                                                        Toast.makeText(context, "Cleared study events!", Toast.LENGTH_LONG).show()
+                                                                    }
+                                                                }
+                                                            },
+                                                            onError = { err ->
+                                                                (context as? Activity)?.runOnUiThread {
+                                                                    isClearingEvents = false
+                                                                    Toast.makeText(context, "Error: $err", Toast.LENGTH_LONG).show()
+                                                                }
+                                                            }
+                                                        )
+                                                    }
+                                                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                                            )
+                                        }
                                     }
                                 }
                                 
@@ -1112,6 +1176,37 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                                     }
                                 )
                             }
+                            if (isAgentLoading) {
+                                item {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(vertical = 4.dp),
+                                        contentAlignment = Alignment.CenterStart
+                                    ) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp, bottomStart = 4.dp, bottomEnd = 16.dp))
+                                                .background(DarkSurfaceCard)
+                                                .padding(horizontal = 14.dp, vertical = 12.dp)
+                                        ) {
+                                            CircularProgressIndicator(
+                                                color = SecondaryCyan,
+                                                modifier = Modifier.size(16.dp),
+                                                strokeWidth = 2.dp
+                                            )
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            Text(
+                                                text = "${currentAgent.replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.getDefault()) else it.toString() }} Agent is thinking...",
+                                                color = TextMuted,
+                                                fontSize = 13.sp,
+                                                fontWeight = FontWeight.Medium
+                                            )
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -1165,8 +1260,9 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                         message.text
                     }
 
+                    val parsedText = parseMarkdownToAnnotatedString(cleanedText, isUser)
                     Text(
-                        text = cleanedText,
+                        text = parsedText,
                         color = if (isUser) Color(0xFFEADAB3) else TextLight,
                         fontSize = 14.sp,
                         lineHeight = 21.sp
@@ -1223,11 +1319,15 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         plannerStartDate: String = "",
         plannerEndDate: String = "",
         onClearAttachment: () -> Unit = {},
-        onResponseReceived: () -> Unit = {}
+        onResponseReceived: () -> Unit = {},
+        onStartLoading: () -> Unit = {},
+        onEndLoading: () -> Unit = {}
     ) {
         val currentId = currentSessionIds[agent]
         val userMsgText = if (text.isNotEmpty()) text else if (fileBase64 != null) "Attached document for analysis" else ""
         if (userMsgText.isEmpty() && fileBase64 == null) return
+
+        onStartLoading()
 
         val localUserMsg = ChatMessage(sender = "user", text = userMsgText, bitmap = imageBitmap)
         
@@ -1341,11 +1441,13 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                         if (newSessionId != null) {
                             currentSessionIds[agent] = newSessionId
                         }
+                        onEndLoading()
                         onResponseReceived()
                     }
                 },
                 onError = { err ->
                     runOnUiThread {
+                        onEndLoading()
                         Toast.makeText(this, "Error: $err", Toast.LENGTH_SHORT).show()
                     }
                 }
@@ -1539,6 +1641,51 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                 }
             }
         )
+    }
+    private fun parseMarkdownToAnnotatedString(text: String, isUser: Boolean): AnnotatedString {
+        return buildAnnotatedString {
+            var cursor = 0
+            val regex = Regex("""(\*\*|`|\*)(.*?)\1""")
+            val matches = regex.findAll(text)
+            
+            for (match in matches) {
+                val start = match.range.first
+                val end = match.range.last + 1
+                val delimiter = match.groupValues[1]
+                val content = match.groupValues[2]
+                
+                if (start > cursor) {
+                    append(text.substring(cursor, start))
+                }
+                
+                when (delimiter) {
+                    "**" -> {
+                        withStyle(style = SpanStyle(fontWeight = FontWeight.Bold, color = if (isUser) Color(0xFFFFF4D4) else Color.White)) {
+                            append(content)
+                        }
+                    }
+                    "*" -> {
+                        withStyle(style = SpanStyle(fontStyle = FontStyle.Italic)) {
+                            append(content)
+                        }
+                    }
+                    "`" -> {
+                        withStyle(style = SpanStyle(
+                            fontFamily = FontFamily.Monospace, 
+                            background = if (isUser) Color(0x33000000) else Color(0x33FFFFFF), 
+                            color = Color(0xFF22D3EE)
+                        )) {
+                            append(content)
+                        }
+                    }
+                }
+                cursor = end
+            }
+            
+            if (cursor < text.length) {
+                append(text.substring(cursor))
+            }
+        }
     }
 }
 

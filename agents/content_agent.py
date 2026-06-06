@@ -6,11 +6,11 @@ class ContentAgent:
         self.llm = llm_service
 
     async def draft_content(self, task: str, context: str) -> dict:
-        system_prompt = "You are a Professional Content Writer. Respond freely in clear, structured markdown. Do not restrict your output format to JSON."
+        system_prompt = "You are a Professional Content Writer. Respond briefly in plain ASCII text. No markdown, emojis, bullets, or special characters."
         prompt = (
             f"Draft content for the following task: '{task}'.\n"
             f"Context: {context}\n\n"
-            "Present your drafted text along with any helpful writing suggestions."
+            "Return a concise draft and at most two short suggestions."
         )
         
         response_text = await self.llm.query_llm(prompt, system_prompt=system_prompt, use_groq=True)

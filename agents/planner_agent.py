@@ -1,8 +1,9 @@
 import json
 import os
+import re
 from datetime import datetime, date, time, timedelta
 from zoneinfo import ZoneInfo
-from typing import Optional, List
+from typing import Optional, List, Tuple
 
 from services.llm_service import LLMService
 from services.ocr_service import OCRService
@@ -13,8 +14,36 @@ from services.planner_service import (
     get_primary_timezone,
     fetch_busy_intervals,
     find_free_study_slots,
-    insert_study_sessions
+    insert_study_sessions,
+    fetch_all_calendars_busy_intervals
 )
+
+
+def extract_relative_exam_date(text: str) -> Optional[str]:
+    lowered = (text or "").lower()
+    today = date.today()
+
+    if re.search(r"\bexam\s+(is\s+)?today\b|\btoday\b", lowered):
+        return today.isoformat()
+    if re.search(r"\bexam\s+(is\s+)?tomorrow\b|\btomorrow\b", lowered):
+        return (today + timedelta(days=1)).isoformat()
+
+    match = re.search(r"\b(?:exam|test|paper|deadline)\b.{0,30}?\bin\s+(\d{1,2})\s+days?\b", lowered)
+    if not match:
+        match = re.search(r"\bin\s+(\d{1,2})\s+days?\b.{0,30}?\b(?:exam|test|paper|deadline)\b", lowered)
+    if match:
+        return (today + timedelta(days=int(match.group(1)))).isoformat()
+    return None
+
+
+def parse_iso_date_or_none(value: Optional[str]) -> Optional[date]:
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(value)
+    except Exception:
+        return None
+
 
 class PlannerAgent:
     def __init__(self, llm_service: LLMService, ocr_service: OCRService, pdf_service: PDFService):
@@ -45,6 +74,10 @@ class PlannerAgent:
         if extracted_syllabus:
             syllabus_context += f"\nAdditional Extracted Syllabus/Schedule details:\n{extracted_syllabus}"
 
+        relative_exam_date = extract_relative_exam_date(syllabus_context)
+        if relative_exam_date:
+            exam_date = relative_exam_date
+
         # 2. Check if Google Calendar is authenticated
         creds = get_credentials()
         if creds:
@@ -53,32 +86,85 @@ class PlannerAgent:
                 current_date_str = date.today().isoformat()
                 current_weekday = date.today().strftime("%A")
                 
+                # Retrieve Calendar Service & Timezone
+                service = get_calendar_service(creds)
+                tz_str = get_primary_timezone(service)
+                
+                # Prioritize user selected start_date
+                start_date_str = start_date or (date.today() + timedelta(days=1)).isoformat()
+                start_date_obj = date.fromisoformat(start_date_str)
+                exam_end_date = parse_iso_date_or_none(exam_date)
+                
+                # Ensure valid start date range
+                if exam_end_date and start_date_obj > exam_end_date:
+                    start_date_obj = date.today()
+                    if start_date_obj > exam_end_date:
+                        start_date_obj = exam_end_date
+                    start_date_str = start_date_obj.isoformat()
+
+                # Setup search range
+                start_search_dt = datetime.combine(start_date_obj, time.min).replace(tzinfo=ZoneInfo(tz_str))
+                end_search_dt = datetime.combine(exam_end_date, time.max).replace(tzinfo=ZoneInfo(tz_str)) if exam_end_date else start_search_dt + timedelta(days=14)
+                
+                # Fetch busy intervals from all calendars
+                raw_busy_intervals = fetch_all_calendars_busy_intervals(service, start_search_dt, end_search_dt)
+                
+                # Format busy intervals for the LLM
+                events_by_day = {}
+                for item in raw_busy_intervals:
+                    s_dt = item["start"]
+                    e_dt = item["end"]
+                    if s_dt.tzinfo is not None:
+                        s_dt = s_dt.astimezone(ZoneInfo(tz_str))
+                    if e_dt.tzinfo is not None:
+                        e_dt = e_dt.astimezone(ZoneInfo(tz_str))
+                    day_str = s_dt.strftime("%A, %b %d, %Y")
+                    time_range = f"{s_dt.strftime('%I:%M %p')} - {e_dt.strftime('%I:%M %p')}"
+                    event_desc = f"{time_range}: {item['summary']} (in {item['calendar_summary']})"
+                    events_by_day.setdefault(day_str, []).append(event_desc)
+                    
+                existing_events_str = ""
+                for day, events in events_by_day.items():
+                    existing_events_str += f"### {day}\n" + "\n".join([f"- {ev}" for ev in events]) + "\n"
+                if not existing_events_str:
+                    existing_events_str = "No existing calendar events/busy slots found."
+
                 system_prompt = (
-                    "You are an AI Study Scheduler. Your task is to analyze the exam details and return a JSON object containing scheduling parameters.\n"
-                    f"Today's date is {current_date_str} ({current_weekday}).\n\n"
-                    "Required JSON schema:\n"
+                    "You are a highly intelligent AI Study Scheduler.\n"
+                    "Your task is to analyze the exam details, the syllabus context, and the user's existing busy calendar events "
+                    "to design a customized, conflict-free study schedule. You must place study sessions at optimal times "
+                    "(e.g., mornings or afternoons, avoiding late nights and avoiding the user's busy slots).\n\n"
+                    f"Today's date is {current_date_str} ({current_weekday}).\n"
+                    f"The user's primary timezone is {tz_str}.\n\n"
+                    "Required JSON format:\n"
                     "{\n"
-                    '  "topic": "string (name of subject/exam)",\n'
-                    '  "total_sessions": "integer (number of study sessions needed, default 5)",\n'
-                    '  "session_duration_hours": "float (hours per session, default 2.0)",\n'
-                    '  "start_date": "string (YYYY-MM-DD, default tomorrow)",\n'
-                    '  "preferred_start_time": "string (HH:MM, default \'14:00\')",\n'
-                    '  "preferred_end_time": "string (HH:MM, default \'18:00\')",\n'
-                    '  "excluded_weekdays": "list of integers (0=Monday, 6=Sunday, default [])"\n'
+                    '  "schedule": [\n'
+                    '    {\n'
+                    '      "date": "YYYY-MM-DD",\n'
+                    '      "start_time": "HH:MM",\n'
+                    '      "end_time": "HH:MM",\n'
+                    '      "topic": "specific topic to study in this session"\n'
+                    '    }\n'
+                    '  ]\n'
                     "}\n\n"
                     "Return ONLY a valid JSON object. Do not include markdown code block syntax (like ```json)."
                 )
                 
                 prompt = (
-                    f"Extract parameters for this study request:\n"
+                    f"Design study schedule for:\n"
                     f"Exam Name: {exam_name or 'Upcoming Exam'}\n"
                     f"Exam Date: {exam_date or 'TBD'}\n"
-                    f"Syllabus Context: {syllabus_context}\n"
-                    f"Completed Topics: {json.dumps(topics_completed)}\n"
+                    f"Syllabus: {syllabus_context}\n"
+                    f"Completed: {json.dumps(topics_completed)}\n"
+                    f"Start Date: {start_date_str}\n\n"
+                    f"User's Busy Calendar Events (DO NOT CLASH WITH THESE):\n"
+                    f"{existing_events_str}\n\n"
+                    "Place study sessions of 1.5 to 3.0 hours length per day, avoiding the busy slots listed above. "
+                    "Try to schedule one session per day on the days leading up to the exam (excluding the exam day itself)."
                 )
-                
-                # Query LLM to parse parameters
-                param_text = await self.llm.query_llm(prompt, system_prompt=system_prompt)
+
+                # Query LLM to design the schedule
+                param_text = await self.llm.query_llm(prompt, system_prompt=system_prompt, plain_text=False)
                 
                 # Clean up any surrounding code blocks if returned by the LLM
                 param_text = param_text.strip()
@@ -91,74 +177,123 @@ class PlannerAgent:
                     param_text = "\n".join(lines).strip()
                 
                 try:
-                    params = json.loads(param_text)
+                    response_json = json.loads(param_text)
+                    sessions_list = response_json.get("schedule", [])
                 except Exception:
-                    # Fallback default parameters
-                    params = {
-                        "topic": exam_name or "Study Session",
-                        "total_sessions": 5,
-                        "session_duration_hours": 2.0,
-                        "start_date": (date.today() + timedelta(days=1)).isoformat(),
-                        "preferred_start_time": "14:00",
-                        "preferred_end_time": "18:00",
-                        "excluded_weekdays": []
-                    }
+                    sessions_list = []
+
+                if not sessions_list:
+                    # Default backup scheduling if parsing fails
+                    current_d = start_date_obj
+                    days_scheduled = 0
+                    while days_scheduled < 5 and (not exam_end_date or current_d <= exam_end_date):
+                        sessions_list.append({
+                            "date": current_d.isoformat(),
+                            "start_time": "14:00",
+                            "end_time": "16:00",
+                            "topic": exam_name or "Study Session"
+                        })
+                        current_d += timedelta(days=1)
+                        days_scheduled += 1
+
+                # Convert raw_busy_intervals to a list of datetime tuples for simple clash checks
+                local_busy_ranges = []
+                for item in raw_busy_intervals:
+                    s_dt = item["start"]
+                    e_dt = item["end"]
+                    if s_dt.tzinfo is None:
+                        s_dt = s_dt.replace(tzinfo=ZoneInfo(tz_str))
+                    else:
+                        s_dt = s_dt.astimezone(ZoneInfo(tz_str))
+                    if e_dt.tzinfo is None:
+                        e_dt = e_dt.replace(tzinfo=ZoneInfo(tz_str))
+                    else:
+                        e_dt = e_dt.astimezone(ZoneInfo(tz_str))
+                    local_busy_ranges.append((s_dt, e_dt))
+
+                slots = []
+                topics_per_slot = []
                 
-                # Retrieve Calendar Service & Timezone
-                service = get_calendar_service(creds)
-                tz_str = get_primary_timezone(service)
-                
-                # Extract values with fallbacks
-                topic = params.get("topic") or exam_name or "Study Session"
-                total_sessions = int(params.get("total_sessions") or 5)
-                session_duration = timedelta(hours=float(params.get("session_duration_hours") or 2.0))
-                
-                # Prioritize user selected start_date
-                start_date_str = start_date or params.get("start_date") or (date.today() + timedelta(days=1)).isoformat()
-                start_date = date.fromisoformat(start_date_str)
-                window_start_time = time.fromisoformat(params.get("preferred_start_time") or "14:00")
-                window_end_time = time.fromisoformat(params.get("preferred_end_time") or "18:00")
-                excluded_weekdays = params.get("excluded_weekdays") or []
-                if not isinstance(excluded_weekdays, list):
-                    excluded_weekdays = []
-                
-                # Search range: from start_date through the requested exam date when provided.
-                start_search_dt = datetime.combine(start_date, time.min).replace(tzinfo=ZoneInfo(tz_str))
-                exam_end_date = None
-                if exam_date:
-                    try:
-                        exam_end_date = date.fromisoformat(exam_date)
-                    except Exception:
-                        exam_end_date = None
-                end_search_dt = datetime.combine(exam_end_date, time.max).replace(tzinfo=ZoneInfo(tz_str)) if exam_end_date else start_search_dt + timedelta(days=60)
-                
-                # Fetch busy intervals
-                busy_intervals = fetch_busy_intervals(service, start_search_dt, end_search_dt)
-                
-                # Find open slots
-                slots = find_free_study_slots(
-                    start_date=start_date,
-                    end_date=exam_end_date,
-                    total_sessions=total_sessions,
-                    session_duration=session_duration,
-                    window_start_time=window_start_time,
-                    window_end_time=window_end_time,
-                    excluded_weekdays=excluded_weekdays,
-                    busy_intervals=busy_intervals,
-                    tz_str=tz_str
-                )
-                
-                if slots:
-                    created_events = insert_study_sessions(service, topic, slots)
+                # Check for overlap helper
+                def has_clash(test_start, test_end):
+                    for b_start, b_end in local_busy_ranges:
+                        if test_start < b_end and test_end > b_start:
+                            return True
+                    return False
+
+                # Helper to find free slot on a given date of a given duration
+                def find_free_slot_on_day(target_date: date, duration: timedelta) -> Optional[Tuple[datetime, datetime]]:
+                    start_boundary = datetime.combine(target_date, time(9, 0)).replace(tzinfo=ZoneInfo(tz_str))
+                    end_boundary = datetime.combine(target_date, time(21, 0)).replace(tzinfo=ZoneInfo(tz_str))
                     
+                    day_busy = []
+                    for b_start, b_end in local_busy_ranges:
+                        if b_start < end_boundary and b_end > start_boundary:
+                            day_busy.append((max(b_start, start_boundary), min(b_end, end_boundary)))
+                    day_busy.sort(key=lambda x: x[0])
+                    
+                    candidate = start_boundary
+                    for b_start, b_end in day_busy:
+                        if b_start - candidate >= duration:
+                            return candidate, candidate + duration
+                        candidate = max(candidate, b_end)
+                    if end_boundary - candidate >= duration:
+                        return candidate, candidate + duration
+                    return None
+
+                for session in sessions_list:
+                    try:
+                        s_date = date.fromisoformat(session["date"])
+                        s_time = time.fromisoformat(session["start_time"])
+                        e_time = time.fromisoformat(session["end_time"])
+                        s_topic = session.get("topic") or exam_name or "Study Session"
+                        
+                        s_dt = datetime.combine(s_date, s_time).replace(tzinfo=ZoneInfo(tz_str))
+                        e_dt = datetime.combine(s_date, e_time).replace(tzinfo=ZoneInfo(tz_str))
+                        duration = e_dt - s_dt
+                        if duration <= timedelta(0):
+                            duration = timedelta(hours=2)
+                            e_dt = s_dt + duration
+                    except Exception:
+                        continue
+                        
+                    # Check for clash
+                    if has_clash(s_dt, e_dt):
+                        adjusted = find_free_slot_on_day(s_date, duration)
+                        if adjusted:
+                            s_dt, e_dt = adjusted
+                        else:
+                            adjusted_found = False
+                            for day_offset in range(1, 4):
+                                adjusted = find_free_slot_on_day(s_date + timedelta(days=day_offset), duration)
+                                if adjusted:
+                                    s_dt, e_dt = adjusted
+                                    adjusted_found = True
+                                    break
+                            if not adjusted_found:
+                                continue
+                                
+                    slots.append((s_dt, e_dt))
+                    topics_per_slot.append(s_topic)
+                    local_busy_ranges.append((s_dt, e_dt))
+
+                if slots:
+                    created_events = []
+                    for (s_dt, e_dt), topic in zip(slots, topics_per_slot):
+                        events = insert_study_sessions(service, topic, [(s_dt, e_dt)], tz_str=tz_str)
+                        if events:
+                            created_events.extend(events)
+                            
                     schedule_items = []
                     milestones = []
-                    for i, (s_dt, e_dt) in enumerate(slots, 1):
+                    for i, ((s_dt, e_dt), topic) in enumerate(zip(slots, topics_per_slot), 1):
+                        duration = e_dt - s_dt
+                        duration_hours = duration.total_seconds() / 3600.0
                         schedule_items.append({
                             "day": i,
                             "date": s_dt.strftime("%Y-%m-%d"),
                             "topics": [topic],
-                            "duration_hours": int(session_duration.total_seconds() // 3600) if session_duration.total_seconds() % 3600 == 0 else round(session_duration.total_seconds() / 3600, 1),
+                            "duration_hours": int(duration_hours) if duration_hours % 1 == 0 else round(duration_hours, 1),
                             "study_load": "high" if i == 1 else "medium" if i < len(slots) else "light",
                             "resources": []
                         })
@@ -168,39 +303,28 @@ class PlannerAgent:
                                 "milestone": f"Finish {topic} revision"
                             })
 
-                    # Ask LLM to generate the study guide matching the scheduled slots
                     slots_str = "\n".join([
-                        f"- Session {i}: {s_dt.strftime('%A, %b %d • %I:%M %p')} - {e_dt.strftime('%I:%M %p')}"
-                        for i, (s_dt, e_dt) in enumerate(slots, 1)
+                        f"- Session {i} ({s_dt.strftime('%A, %b %d')}): {s_dt.strftime('%I:%M %p')} - {e_dt.strftime('%I:%M %p')} -> Topic: {topic}"
+                        for i, ((s_dt, e_dt), topic) in enumerate(zip(slots, topics_per_slot), 1)
                     ])
                     
                     study_prompt = (
                         f"I have successfully scheduled {len(slots)} study sessions in the user's Google Calendar:\n"
                         f"{slots_str}\n\n"
-                        f"Please generate a detailed study plan dividing the following syllabus/exam preparation into these specific slots:\n"
+                        f"Generate a short study plan dividing the syllabus into these exact slots only:\n"
                         f"Exam: {exam_name or 'Upcoming Exam'} (Date: {exam_date or 'TBD'})\n"
                         f"Syllabus Context: {syllabus_context}\n"
                         f"Already completed: {json.dumps(topics_completed)}\n\n"
-                        "Respond in clear, structured markdown. Detail which topics should be covered in each session."
+                        "Keep it concise. No markdown. No emojis. No special characters."
                     )
                     
                     system_prompt = (
                         "You are a professional Academic Planner. Guide the user through their study schedule, "
-                        "mentioning that these slots have been booked in their Google Calendar. Help them understand what to study in each session."
+                        "mentioning that these slots have been booked in their Google Calendar. Keep the answer short."
                     )
                     
                     response_text = await self.llm.query_llm(study_prompt, system_prompt=system_prompt)
                     
-                    formatted_slots = []
-                    for i, (s_dt, e_dt) in enumerate(slots):
-                        event_id = created_events[i].get("id") if i < len(created_events) else None
-                        formatted_slots.append({
-                            "id": event_id,
-                            "start": s_dt.isoformat(),
-                            "end": e_dt.isoformat(),
-                            "formatted": s_dt.strftime("%A, %b %d • %I:%M %p") + " - " + e_dt.strftime("%I:%M %p")
-                        })
-                        
                     return {
                         "response": response_text,
                         "exam_name": exam_name or "Upcoming Exam",
@@ -222,18 +346,30 @@ class PlannerAgent:
                 pass
 
         # 3. Fallback standard text planning path (if no creds or an error occurred)
+        fallback_start = parse_iso_date_or_none(start_date) or date.today()
+        fallback_exam = parse_iso_date_or_none(exam_date)
+        if fallback_exam and fallback_start > fallback_exam:
+            fallback_start = date.today()
+            if fallback_start > fallback_exam:
+                fallback_start = fallback_exam
+        plan_days = ((fallback_exam - fallback_start).days + 1) if fallback_exam else 3
+        plan_days = max(1, min(plan_days, 7))
+
         system_prompt = (
             "You are a professional Academic Planner. You must follow these safety guardrails strictly:\n"
             "- Only answer educational, academic, or study-related planning queries.\n"
             "- Do not process any inappropriate, sexual, adult, adulterous, violent, or unsafe content.\n"
-            "Respond freely in clear, structured markdown. Present a detailed study schedule and milestones for the user.\n"
-            "Add a note at the end inviting them to link their Google Calendar for automated, conflict-free slot booking."
+            "Return a short plain text plan only. No markdown, emojis, bullets, tables, or special characters.\n"
+            "Use only the requested date range. Do not create a week plan unless the range is seven days."
         )
 
         prompt = (
             f"Generate a daily study plan for the exam '{exam_name or 'Upcoming Exam'}' on {exam_date or 'TBD'}.\n"
+            f"Start date: {fallback_start.isoformat()}.\n"
+            f"Number of plan days: {plan_days}.\n"
             f"Syllabus Context: {syllabus_context}\n"
             f"Completed Topics: {json.dumps(topics_completed)}\n"
+            "Each day should be one short line."
         )
         
         response_text = await self.llm.query_llm(prompt, system_prompt=system_prompt)
