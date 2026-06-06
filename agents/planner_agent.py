@@ -122,9 +122,15 @@ class PlannerAgent:
                 if not isinstance(excluded_weekdays, list):
                     excluded_weekdays = []
                 
-                # Search range: from start_date to 60 days out
+                # Search range: from start_date through the requested exam date when provided.
                 start_search_dt = datetime.combine(start_date, time.min).replace(tzinfo=ZoneInfo(tz_str))
-                end_search_dt = start_search_dt + timedelta(days=60)
+                exam_end_date = None
+                if exam_date:
+                    try:
+                        exam_end_date = date.fromisoformat(exam_date)
+                    except Exception:
+                        exam_end_date = None
+                end_search_dt = datetime.combine(exam_end_date, time.max).replace(tzinfo=ZoneInfo(tz_str)) if exam_end_date else start_search_dt + timedelta(days=60)
                 
                 # Fetch busy intervals
                 busy_intervals = fetch_busy_intervals(service, start_search_dt, end_search_dt)
@@ -132,6 +138,7 @@ class PlannerAgent:
                 # Find open slots
                 slots = find_free_study_slots(
                     start_date=start_date,
+                    end_date=exam_end_date,
                     total_sessions=total_sessions,
                     session_duration=session_duration,
                     window_start_time=window_start_time,
@@ -144,6 +151,23 @@ class PlannerAgent:
                 if slots:
                     created_events = insert_study_sessions(service, topic, slots)
                     
+                    schedule_items = []
+                    milestones = []
+                    for i, (s_dt, e_dt) in enumerate(slots, 1):
+                        schedule_items.append({
+                            "day": i,
+                            "date": s_dt.strftime("%Y-%m-%d"),
+                            "topics": [topic],
+                            "duration_hours": int(session_duration.total_seconds() // 3600) if session_duration.total_seconds() % 3600 == 0 else round(session_duration.total_seconds() / 3600, 1),
+                            "study_load": "high" if i == 1 else "medium" if i < len(slots) else "light",
+                            "resources": []
+                        })
+                        if i == len(slots):
+                            milestones.append({
+                                "day": i,
+                                "milestone": f"Finish {topic} revision"
+                            })
+
                     # Ask LLM to generate the study guide matching the scheduled slots
                     slots_str = "\n".join([
                         f"- Session {i}: {s_dt.strftime('%A, %b %d • %I:%M %p')} - {e_dt.strftime('%I:%M %p')}"
@@ -181,8 +205,8 @@ class PlannerAgent:
                         "response": response_text,
                         "exam_name": exam_name or "Upcoming Exam",
                         "exam_date": exam_date or "TBD",
-                        "schedule": formatted_slots,
-                        "milestones": []
+                        "schedule": schedule_items,
+                        "milestones": milestones
                     }
                 else:
                     return {

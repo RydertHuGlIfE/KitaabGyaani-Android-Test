@@ -13,6 +13,28 @@ from googleapiclient.discovery import build
 TOKEN_FILE = "token.json"
 SCOPES = ['https://www.googleapis.com/auth/calendar']
 
+
+def normalize_timezone_name(tz_name: Optional[str]) -> str:
+    if not tz_name:
+        return 'UTC'
+
+    cleaned = tz_name.strip().replace(' ', '')
+    lowered = cleaned.lower()
+
+    aliases = {
+        'asiankolkata': 'Asia/Kolkata',
+        'asia/calcutta': 'Asia/Kolkata',
+        'asia/kolkata': 'Asia/Kolkata',
+        'ist': 'Asia/Kolkata',
+        'utc': 'UTC',
+        'gmt': 'UTC',
+    }
+
+    if lowered in aliases:
+        return aliases[lowered]
+
+    return tz_name
+
 def get_credentials() -> Optional[Credentials]:
     if os.path.exists(TOKEN_FILE):
         try:
@@ -112,7 +134,7 @@ def get_calendar_service(credentials) -> build:
 def get_primary_timezone(service) -> str:
     try:
         calendar = service.calendars().get(calendarId='primary').execute()
-        return calendar.get('timeZone', 'UTC')
+        return normalize_timezone_name(calendar.get('timeZone', 'UTC'))
     except Exception as e:
         print(f"Error fetching timezone: {e}")
         return 'UTC'
@@ -158,6 +180,7 @@ def fetch_busy_intervals(service, start_dt: datetime, end_dt: datetime, calendar
 
 def find_free_study_slots(
     start_date: date,
+    end_date: Optional[date],
     total_sessions: int,
     session_duration: timedelta,
     window_start_time: time,
@@ -190,6 +213,9 @@ def find_free_study_slots(
     sorted_busy = sorted(localized_busy, key=lambda x: x[0])
     
     while sessions_scheduled < total_sessions and days_searched < max_search_days:
+        if end_date and current_date > end_date:
+            break
+
         if current_date.weekday() in excluded_weekdays:
             current_date += timedelta(days=1)
             days_searched += 1
